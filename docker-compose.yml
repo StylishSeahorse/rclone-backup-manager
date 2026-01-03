@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    volumes:
+      - backup-data:/app/data
+      - /var/www/nextcloud/data:/source:ro  # Mount source read-only
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-prod}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backup-data:
