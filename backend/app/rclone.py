@@ -29,66 +29,48 @@ class RcloneManager:
     def decrypt_credentials(self, encrypted: str) -> dict:
         return json.loads(self.cipher.decrypt(encrypted.encode()).decode())
     
-def create_remote(self, config: BackupConfig):
-    """
-    Create or update an rclone remote using rclone itself.
-    This is idempotent and safe to call before every job.
-    """
-    creds = self.decrypt_credentials(config.encrypted_credentials)
-
-    config_file = f"{self.config_dir}/rclone.conf"
-    os.makedirs(self.config_dir, exist_ok=True)
-
-    # Check if remote already exists
-    check_cmd = [
-        "rclone", "listremotes",
-        "--config", config_file
-    ]
-
-    result = subprocess.run(check_cmd, capture_output=True, text=True)
-
-    remote_exists = (
-        result.returncode == 0 and
-        f"{config.remote_name}:" in result.stdout.splitlines()
-    )
-
-    # Build rclone config create command
-    if config.remote_type == "s3":
-        cmd = [
-            "rclone", "config", "create",
-            config.remote_name, "s3",
-            "provider", "Wasabi",
-            "access_key_id", creds["access_key"],
-            "secret_access_key", creds["secret_key"],
-            "region", creds.get("region", "us-east-1"),
-            "endpoint", creds.get("endpoint", "s3.wasabisys.com"),
-            "acl", "private",
-            "--config", config_file
-        ]
-
-    elif config.remote_type == "gdrive":
-        cmd = [
-            "rclone", "config", "create",
-            config.remote_name, "drive",
-            "client_id", creds["client_id"],
-            "client_secret", creds["client_secret"],
-            "token", creds["token"],
-            "--config", config_file
-        ]
-
-    else:
-        raise ValueError(f"Unsupported remote type: {config.remote_type}")
+    def create_remote(self, config: BackupConfig):
+        creds = self.decrypt_credentials(config.encrypted_credentials)
         
-    if remote_exists:
-        cmd.append("--update")
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to create/update rclone remote '{config.remote_name}': "
-            f"{result.stderr.strip()}"
-        )
+        if config.remote_type == "s3":
+            conf = f"""[{config.remote_name}]
+type = s3
+provider = Wasabi
+access_key_id = {creds['access_key']}
+secret_access_key = {creds['secret_key']}
+region = {creds.get('region', 'us-east-1')}
+endpoint = {creds.get('endpoint', 's3.wasabisys.com')}
+"""
+        elif config.remote_type == "gdrive":
+            conf = f"""[{config.remote_name}]
+type = drive
+client_id = {creds['client_id']}
+client_secret = {creds['client_secret']}
+token = {creds['token']}
+"""
+        else:
+            raise ValueError(f"Unsupported remote type: {config.remote_type}")
+        
+        config_file = f"{self.config_dir}/rclone.conf"
+        
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                existing = f.read()
+            lines = []
+            skip = False
+            for line in existing.split('\n'):
+                if line.strip() == f"[{config.remote_name}]":
+                    skip = True
+                elif line.startswith('['):
+                    skip = False
+                if not skip:
+                    lines.append(line)
+            existing = '\n'.join(lines)
+        else:
+            existing = ""
+        
+        with open(config_file, 'w') as f:
+            f.write(existing + '\n' + conf)
     
     def delete_remote(self, remote_name: str):
         config_file = f"{self.config_dir}/rclone.conf"
@@ -113,7 +95,6 @@ def create_remote(self, config: BackupConfig):
     
     async def run_backup(self, config: BackupConfig, db: Session) -> BackupJob:
         """Execute backup job (local or via agent)"""
-        self.create_remote(config)
         from .models import Agent
         
         # Get agent if specified
@@ -153,11 +134,10 @@ def create_remote(self, config: BackupConfig):
                 "rclone", "sync",
                 config.source_path,
                 remote,
-                "--progress",
-                "--config", "/root/.config/rclone/rclone.conf",
+                "--config", f"{self.config_dir}/rclone.conf",
                 "--log-file", log_file,
                 "--log-level", "INFO",
-                "--stats", "5s",
+                "--stats", "30s",
                 "--transfers", "8",
                 "--checkers", "16"
             ]
