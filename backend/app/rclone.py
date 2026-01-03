@@ -136,9 +136,6 @@ token = {creds['token']}
                 config.source_path,
                 remote,
                 "--progress",
-                "--s3-no-ac",l
-                "--s3-no-check-bucket",
-                "--s3-no-head",
                 "--config", f"{self.config_dir}/rclone.conf",
                 "--log-file", log_file,
                 "--log-level", "INFO",
