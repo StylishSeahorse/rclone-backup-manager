@@ -35,7 +35,7 @@ app = FastAPI(title="Rclone Backup Manager")
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r".*",
+    allow_origins=["*"],  # Allow all origins when behind nginx proxy
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -413,8 +413,12 @@ async def shutdown():
 # Auth endpoints
 @app.post("/api/auth/register", response_model=Token)
 def register(user: UserCreate, db: Session = Depends(get_db)):
+    print(f"Registration attempt: username={user.username}")
+    
     from .models import User
-    if db.query(User).filter(User.username == user.username).first():
+    existing = db.query(User).filter(User.username == user.username).first()
+    if existing:
+        print(f"Username {user.username} already exists")
         raise HTTPException(status_code=400, detail="Username exists")
     
     new_user = User(
@@ -425,6 +429,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     
     token = create_access_token(data={"sub": user.username})
+    print(f"User {user.username} created successfully")
     return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/api/auth/login", response_model=Token)
