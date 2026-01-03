@@ -5,7 +5,6 @@ services:
     build: ./backend
     volumes:
       - backup-data:/app/data
-    network_mode: "host"
     environment:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-prod}
     ports:
