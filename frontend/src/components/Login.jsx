@@ -15,7 +15,7 @@ function Login({ onLogin }) {
     
     try {
       const endpoint = isRegister ? '/auth/register' : '/auth/login';
-      const res = await axios.post(`http://localhost:8000/api${endpoint}`, {
+      const res = await axios.post(`/api${endpoint}`, {
         username,
         password
       });

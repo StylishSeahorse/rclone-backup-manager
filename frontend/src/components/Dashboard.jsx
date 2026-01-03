@@ -5,7 +5,7 @@ import LogViewer from './LogViewer';
 import AgentManager from './AgentManager';
 
 const api = axios.create({
-  baseURL: 'http://localhost:8000/api'
+  baseURL: '/api'
 });
 
 function Dashboard({ token, onLogout }) {

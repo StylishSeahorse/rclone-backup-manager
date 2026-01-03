@@ -5,7 +5,7 @@ services:
     build: ./backend
     volumes:
       - backup-data:/app/data
-      - /var/www/nextcloud/data:/source:ro  # Mount source read-only
+    network_mode: "host"
     environment:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-prod}
     ports:
