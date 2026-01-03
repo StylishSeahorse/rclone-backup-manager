@@ -40,6 +40,7 @@ access_key_id = {creds['access_key']}
 secret_access_key = {creds['secret_key']}
 region = {creds.get('region', 'us-east-1')}
 endpoint = {creds.get('endpoint', 's3.wasabisys.com')}
+acl = private
 """
         elif config.remote_type == "gdrive":
             conf = f"""[{config.remote_name}]
@@ -134,10 +135,14 @@ token = {creds['token']}
                 "rclone", "sync",
                 config.source_path,
                 remote,
+                "--progress",
+                "--s3-no-ac",l
+                "--s3-no-check-bucket",
+                "--s3-no-head",
                 "--config", f"{self.config_dir}/rclone.conf",
                 "--log-file", log_file,
                 "--log-level", "INFO",
-                "--stats", "30s",
+                "--stats", "5s",
                 "--transfers", "8",
                 "--checkers", "16"
             ]
