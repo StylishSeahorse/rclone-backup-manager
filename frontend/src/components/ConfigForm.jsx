@@ -42,7 +42,7 @@ function ConfigForm({ token, agents = [], onSave, onCancel, editConfig = null })
   }, []);
 
   const loadProfiles = async () => {
-    const api = axios.create({ baseURL: 'http://localhost:8000/api' });
+    const api = axios.create({ baseURL: '/api' });
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
     const res = await api.get('/profiles');
     setProfiles(res.data);
@@ -60,7 +60,7 @@ function ConfigForm({ token, agents = [], onSave, onCancel, editConfig = null })
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const api = axios.create({ baseURL: 'http://localhost:8000/api' });
+    const api = axios.create({ baseURL: '/api' });
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
     
     try {

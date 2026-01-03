@@ -17,7 +17,7 @@ function ProfileManager({ token, onClose, onSelect }) {
   }, []);
 
   const loadProfiles = async () => {
-    const api = axios.create({ baseURL: 'http://localhost:8000/api' });
+    const api = axios.create({ baseURL: '/api' });
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
     const res = await api.get('/profiles');
     setProfiles(res.data);
@@ -26,7 +26,7 @@ function ProfileManager({ token, onClose, onSelect }) {
   const saveProfile = async (e) => {
     e.preventDefault();
     try {
-      const api = axios.create({ baseURL: 'http://localhost:8000/api' });
+      const api = axios.create({ baseURL: '/api' });
       api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       await api.post('/profiles', form);
       setShowForm(false);
@@ -39,7 +39,7 @@ function ProfileManager({ token, onClose, onSelect }) {
 
   const deleteProfile = async (id) => {
     if (confirm('Delete this profile?')) {
-      const api = axios.create({ baseURL: 'http://localhost:8000/api' });
+      const api = axios.create({ baseURL: '/api' });
       api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       await api.delete(`/profiles/${id}`);
       loadProfiles();

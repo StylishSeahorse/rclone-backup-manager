@@ -20,7 +20,7 @@ function AgentManager({ agents, onRefresh, token }) {
   const deleteAgent = async (id) => {
     if (confirm('Remove this agent? It will need to be reinstalled.')) {
       try {
-        const api = axios.create({ baseURL: 'http://localhost:8000/api' });
+        const api = axios.create({ baseURL: '/api' });
         api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
         await api.delete(`/agents/${id}`);
         onRefresh();

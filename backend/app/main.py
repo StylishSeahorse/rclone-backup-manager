@@ -218,7 +218,7 @@ def get_install_script():
 set -e
 
 TOKEN="$1"
-SERVER_URL="${2:-http://localhost:8000}"
+SERVER_URL="${2:-http://$(ip route get 1 | awk '{print $7;exit}'):8000}"
 
 if [ -z "$TOKEN" ]; then
     echo "Usage: $0 <install-token> [server-url]"

@@ -5,7 +5,7 @@ function LogViewer({ jobId, token, onClose }) {
   const [logs, setLogs] = useState('');
 
   useEffect(() => {
-    const api = axios.create({ baseURL: 'http://localhost:8000/api' });
+    const api = axios.create({ baseURL: '/api' });
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
     
     api.get(`/jobs/${jobId}/logs`).then(res => {
