@@ -1,0 +1,12 @@
+{
+  "name": "wasabi-backup-web",
+  "private": true,
+  "description": "Build-time only: compiles Tailwind CSS for the embedded dashboard UI.",
+  "scripts": {
+    "build": "tailwindcss -i src/input.css -o static/tailwind.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.0",
+    "tailwindcss": "4.3.0"
+  }
+}

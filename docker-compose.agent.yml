@@ -1,0 +1,30 @@
+# Agent only. Copy this file to each machine you want to back up, then:
+#   AGENT_SERVER_URL=https://backup.example.com AGENT_API_KEY=wbk_... docker compose -f docker-compose.agent.yml up -d --build
+# (Create the agent in the dashboard first; it shows the API key once.)
+
+name: wasabi-backup-agent
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    image: wasabi-backup/agent:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      AGENT_SERVER_URL: ${AGENT_SERVER_URL:?e.g. https://backup.example.com}
+      AGENT_API_KEY: ${AGENT_API_KEY:?API key from the dashboard}
+      AGENT_BROWSE_ROOTS: /host
+      # AGENT_CA_FILE: /certs/ca.pem        # if the dashboard uses a private CA (mount the file below)
+    volumes:
+      - /home:/host/home:ro
+      - /etc:/host/etc:ro
+      - /var/www:/host/var/www:ro
+      # - ./ca.pem:/certs/ca.pem:ro
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp

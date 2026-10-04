@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+# Linux backup agent: the Go daemon plus the official rclone binary.
+# Build context is the repository root:  docker build -f docker/Dockerfile.agent .
+
+ARG GO_VERSION=1.26
+# Pin rclone; bump deliberately. The upstream image publishes linux/amd64 and linux/arm64.
+ARG RCLONE_VERSION=1.75.1
+ARG ALPINE_VERSION=3.22
+
+# ---- 1. Source of the rclone binary (official, statically linked) ------------------------
+FROM rclone/rclone:${RCLONE_VERSION} AS rclone
+
+# ---- 2. Compile the agent ------------------------------------------------------------------
+FROM golang:${GO_VERSION}-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /out/agent ./cmd/agent
+
+# ---- 3. Runtime ----------------------------------------------------------------------------
+FROM alpine:${ALPINE_VERSION}
+# ca-certificates: TLS to Wasabi and the dashboard.  tzdata: cron schedules in local time zones.
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
+COPY --from=build /out/agent /usr/local/bin/agent
+# Fail the build if rclone is missing or cannot run on this architecture.
+RUN rclone version
+
+ENV AGENT_RCLONE_PATH=/usr/local/bin/rclone \
+    AGENT_BROWSE_ROOTS=/host,/data
+
+# Runs as root by default so it can read any mounted host file; docker-compose.yml drops every
+# capability except DAC_READ_SEARCH and mounts sources read-only. To restrict the agent to what
+# one user can read, run the container with `user: "<uid>:<gid>"` instead.
+ENTRYPOINT ["/usr/local/bin/agent"]

@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.7
+# Central dashboard: Go backend + embedded Tailwind UI in one static binary.
+# Build context is the repository root:  docker build -f docker/Dockerfile.server .
+
+ARG NODE_VERSION=22
+ARG GO_VERSION=1.26
+
+# ---- 1. Compile Tailwind CSS (build-time only; Node never ships) ------------------
+FROM node:${NODE_VERSION}-alpine AS css
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/src ./src
+COPY web/static ./static
+RUN npm run build
+
+# ---- 2. Compile the Go server (CGO-free: pure-Go SQLite driver) ----------------------
+FROM golang:${GO_VERSION}-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+COPY --from=css /web/static/tailwind.css web/static/tailwind.css
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /out/server ./cmd/server \
+ && mkdir -p /out/data
+
+# ---- 3. Minimal runtime: no shell, no package manager, non-root ------------------------
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/server /server
+# Pre-create the data dir owned by the nonroot user so a fresh named volume is writable.
+COPY --from=build --chown=65532:65532 /out/data /data
+ENV DATA_DIR=/data LISTEN=:8080
+VOLUME ["/data"]
+EXPOSE 8080
+USER 65532:65532
+# distroless has no curl: the binary checks itself.
+HEALTHCHECK --interval=15s --timeout=4s --start-period=10s --retries=3 CMD ["/server", "healthcheck"]
+ENTRYPOINT ["/server"]

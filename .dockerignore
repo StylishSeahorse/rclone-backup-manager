@@ -1,0 +1,9 @@
+.git
+.env
+node_modules
+web/node_modules
+backend
+frontend
+bin
+data
+*.db

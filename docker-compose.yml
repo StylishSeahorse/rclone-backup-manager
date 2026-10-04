@@ -1,24 +1,74 @@
-version: '3.8'
+# Wasabi backup system: central dashboard + one demo agent on the same host.
+#
+#   cp .env.example .env      # then fill in the three secrets (commands inside)
+#   docker compose up -d --build
+#   open http://localhost:8080   (log in with ADMIN_USER / ADMIN_PASSWORD)
+#
+# For real deployments, run only the `server` service centrally (behind HTTPS) and run
+# docker-compose.agent.yml on every machine you want to back up.
+
+name: wasabi-backup
 
 services:
-  backend:
-    build: ./backend
-    volumes:
-      - backup-data:/app/data
-    network_mode: "host"
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    image: wasabi-backup/server:latest
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
     environment:
-      - SECRET_KEY=${SECRET_KEY:-change-me-in-prod}
-    ports:
-      - "8000:8000"
-    restart: unless-stopped
+      # Master secret: signs admin sessions and encrypts stored Wasabi secrets (AES-256-GCM).
+      # Back it up. Losing it makes stored credentials unreadable.
+      SERVER_SECRET: ${SERVER_SECRET:?set SERVER_SECRET in .env (openssl rand -hex 32)}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      # Pre-enrols the demo agent below so the stack works with no manual key copying.
+      BOOTSTRAP_AGENT_NAME: demo-agent
+      BOOTSTRAP_AGENT_KEY: ${AGENT_API_KEY:?set AGENT_API_KEY in .env (echo wbk_$(openssl rand -hex 32))}
+      # Set to true once the dashboard is served over HTTPS (reverse proxy).
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      - server-data:/data          # SQLite database
+    read_only: true
+    tmpfs:
+      - /tmp                       # SQLite temp files
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
-  frontend:
-    build: ./frontend
-    ports:
-      - "80:80"
-    depends_on:
-      - backend
+  agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    image: wasabi-backup/agent:latest
     restart: unless-stopped
+    init: true                      # reaps rclone child processes
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      AGENT_SERVER_URL: http://server:8080     # use https://… when the server is remote
+      AGENT_API_KEY: ${AGENT_API_KEY:?set AGENT_API_KEY in .env}
+      AGENT_HOSTNAME: ${AGENT_HOSTNAME:-demo-host}
+      # Only these container paths are visible to the dashboard's file browser.
+      AGENT_BROWSE_ROOTS: /host,/data
+      AGENT_MAX_CONCURRENT: "1"
+    volumes:
+      # Host directories to back up. ALWAYS mount read-only: the agent never needs to write.
+      - ${BACKUP_SRC:-./demo-data}:/data:ro
+      # More examples (anything under /host or /data shows up in the dashboard's file tree):
+      # - /home:/host/home:ro
+      # - /etc:/host/etc:ro
+      # - /srv/photos:/host/photos:ro
+    # Least privilege: no capabilities except bypassing file read permissions (root can then
+    # read any mounted file, but cannot chown, mount, ptrace, ...), and a read-only root FS.
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp                         # rclone scratch space
 
 volumes:
-  backup-data:
+  server-data:
