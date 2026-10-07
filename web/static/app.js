@@ -53,10 +53,11 @@ function ago(s) {
   if (d < 86400) return Math.floor(d / 3600) + ' h ago';
   return Math.floor(d / 86400) + ' d ago';
 }
+// Decimal units (1 GB = 1,000,000,000 bytes), as storage providers bill.
 function fmtBytes(n) {
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return (i ? n.toFixed(1) : n) + ' ' + u[i];
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']; let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return (i ? String(Math.round(n * 10) / 10) : n) + ' ' + u[i];
 }
 function duration(run) {
   const end = run.finished_at || Math.floor(Date.now() / 1000);
@@ -107,7 +108,7 @@ function layout(active, ...content) {
     h('header', { class: 'border-b border-slate-800 bg-slate-900' },
       h('div', { class: 'mx-auto flex max-w-7xl items-center gap-2 px-4 py-3' },
         h('div', { class: 'mr-4 text-base font-semibold text-emerald-400' }, 'Wasabi Backup'),
-        link('#/agents', 'Agents', 'agents'), link('#/credentials', 'Credentials', 'creds'), link('#/runs', 'History', 'runs'),
+        link('#/overview', 'Overview', 'overview'), link('#/agents', 'Agents', 'agents'), link('#/credentials', 'Credentials', 'creds'), link('#/runs', 'History', 'runs'),
         h('div', { class: 'flex-1' }),
         h('button', { class: 'btn btn-ghost', onclick: guard(async () => { await api('POST', '/api/logout'); renderLogin(); }) }, 'Sign out'))),
     h('main', { class: 'mx-auto max-w-7xl px-4 py-6' }, ...content));
@@ -133,7 +134,7 @@ function renderLogin() {
 // ---------- router ------------------------------------------------------------
 async function route() {
   stopPolling();
-  const [, section, id] = (location.hash || '#/agents').split('/');
+  const [, section, id] = (location.hash || '#/overview').split('/');
   try {
     await api('GET', '/api/me');
   } catch { return; }
@@ -142,7 +143,8 @@ async function route() {
     else if (section === 'runs' && id) await viewRun(id);
     else if (section === 'runs') await viewRuns();
     else if (section === 'agents' && id) await viewAgent(id);
-    else await viewAgents();
+    else if (section === 'agents') await viewAgents();
+    else await viewOverview();
   } catch (e) { toast(e.message, true); }
 }
 window.addEventListener('hashchange', route);

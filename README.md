@@ -126,6 +126,21 @@ Current files always live at `<prefix>/<agent>/<original path>` for both types, 
 * **Job → Verify** (`rclone check --one-way`) confirms every file on the machine exists with the same size and hash
   in Wasabi. It fails, listing the differences, if anything is missing or changed.
 
+### Overview dashboard
+
+The landing page summarises backup health for the last 24 hours, 7, 30 or 90 days, for all agents or one:
+
+* **Backup success rate** with the change vs the previous period, plus successful and failed backups, data
+  uploaded, files uploaded/versioned/deleted, agents online and average backup time.
+* **Needs attention:** failing jobs, overdue jobs (no successful backup within twice the schedule's interval),
+  offline agents (critical when they have scheduled jobs) and failed verifies.
+* **Backups per day** by outcome and **data uploaded per day**, each with tooltips and a table view.
+* **Per-job health:** last backup, last success, next run, success count, data, and a strip of recent runs.
+* **Recent failures** with links to their logs.
+
+Only real backups (manual or scheduled) count towards rates and totals; dry runs and verifies don't. The agent
+counts bytes and files from rclone's own log lines. The page refreshes every 30 seconds.
+
 ### Scheduling
 
 Schedules are picked in plain terms: every 5 to 30 minutes, every N hours, daily, weekly on chosen days, or monthly,
@@ -154,7 +169,8 @@ backup_jobs(id, agent_id→agents, credential_id→wasabi_credentials, name, des
             backup_type['incremental'|'sync'], retention_days, …)
 backup_paths(id, job_id→backup_jobs, path, mode)                       -- selected in the file tree (mode: legacy)
 schedules(id, job_id→backup_jobs, cron_expr, timezone, enabled)        -- many per job
-runs(id, job_id, agent_id, trigger, status, exit_code, summary, started_at, finished_at, updated_at)
+runs(id, job_id, agent_id, trigger, status, exit_code, summary, started_at, finished_at, updated_at,
+     bytes, files_transferred, files_deleted, files_versioned, errors)
 run_logs(run_id→runs, seq, ts, stream['stdout'|'stderr'|'agent'], line) -- PK (run_id, seq)
 agent_config_rev(agent_id, rev)                                          -- change counter driving config pushes
 ```

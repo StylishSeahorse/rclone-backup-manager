@@ -107,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{id}", admin(s.deleteJob))
 	mux.HandleFunc("POST /api/jobs/{id}/run", admin(s.runJobNow))
 
+	mux.HandleFunc("GET /api/overview", admin(s.overview))
 	mux.HandleFunc("GET /api/runs", admin(s.listRuns))
 	mux.HandleFunc("GET /api/runs/{id}", admin(s.getRun))
 	mux.HandleFunc("GET /api/runs/{id}/logs", admin(s.runLogs))

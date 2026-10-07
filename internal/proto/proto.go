@@ -211,6 +211,16 @@ type FinishRunRequest struct {
 	Status   string `json:"status"`
 	ExitCode int    `json:"exit_code"`
 	Summary  string `json:"summary"`
+	RunStats
+}
+
+// RunStats is what a run did, counted from rclone's own log lines.
+type RunStats struct {
+	Bytes       int64 `json:"bytes"`             // bytes uploaded
+	Transferred int   `json:"files_transferred"` // files uploaded (new or changed)
+	Deleted     int   `json:"files_deleted"`     // files deleted from the destination (mirror sync)
+	Versioned   int   `json:"files_versioned"`   // old copies moved into version folders (incremental)
+	Errors      int   `json:"errors"`            // rclone ERROR lines
 }
 
 // ---- Schedules --------------------------------------------------------------

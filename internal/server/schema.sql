@@ -84,7 +84,13 @@ CREATE TABLE IF NOT EXISTS runs (
     summary     TEXT    NOT NULL DEFAULT '',
     started_at  BIGINT  NOT NULL,
     finished_at BIGINT,
-    updated_at  BIGINT  NOT NULL                    -- last log/heartbeat, used to reap dead runs
+    updated_at  BIGINT  NOT NULL,                   -- last log/heartbeat, used to reap dead runs
+    -- what the run did (counted by the agent from rclone's log)
+    bytes             BIGINT  NOT NULL DEFAULT 0,
+    files_transferred INTEGER NOT NULL DEFAULT 0,
+    files_deleted     INTEGER NOT NULL DEFAULT 0,
+    files_versioned   INTEGER NOT NULL DEFAULT 0,
+    errors            INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_job_started ON runs (job_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_status      ON runs (status);

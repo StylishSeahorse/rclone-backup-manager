@@ -293,8 +293,15 @@ func (s *Server) agentFinishRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid status")
 		return
 	}
-	res, err := s.db.Exec(`UPDATE runs SET status = ?, exit_code = ?, summary = ?, finished_at = ?, updated_at = ?
-		WHERE id = ? AND agent_id = ? AND status = 'running'`, in.Status, in.ExitCode, clip(in.Summary, 500), now(), now(), id, a.ID)
+	st := in.RunStats
+	if st.Bytes < 0 || st.Transferred < 0 || st.Deleted < 0 || st.Versioned < 0 || st.Errors < 0 {
+		writeErr(w, 400, "invalid stats")
+		return
+	}
+	res, err := s.db.Exec(`UPDATE runs SET status = ?, exit_code = ?, summary = ?, finished_at = ?, updated_at = ?,
+		bytes = ?, files_transferred = ?, files_deleted = ?, files_versioned = ?, errors = ?
+		WHERE id = ? AND agent_id = ? AND status = 'running'`, in.Status, in.ExitCode, clip(in.Summary, 500), now(), now(),
+		st.Bytes, st.Transferred, st.Deleted, st.Versioned, st.Errors, id, a.ID)
 	if err != nil {
 		dbErr(w, err)
 		return

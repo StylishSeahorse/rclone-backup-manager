@@ -61,6 +61,13 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	if !has("runs", "bytes") {
+		for _, col := range []string{"bytes BIGINT", "files_transferred INTEGER", "files_deleted INTEGER", "files_versioned INTEGER", "errors INTEGER"} {
+			if _, err := db.Exec(`ALTER TABLE runs ADD COLUMN ` + col + ` NOT NULL DEFAULT 0`); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

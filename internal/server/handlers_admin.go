@@ -697,16 +697,19 @@ type runView struct {
 	Summary    string `json:"summary"`
 	StartedAt  int64  `json:"started_at"`
 	FinishedAt *int64 `json:"finished_at"`
+	proto.RunStats
 }
 
-const runSelect = `SELECT r.id, r.job_id, j.name, a.name, r.trigger, r.status, r.exit_code, r.summary, r.started_at, r.finished_at
+const runSelect = `SELECT r.id, r.job_id, j.name, a.name, r.trigger, r.status, r.exit_code, r.summary, r.started_at, r.finished_at,
+	r.bytes, r.files_transferred, r.files_deleted, r.files_versioned, r.errors
 	FROM runs r JOIN backup_jobs j ON j.id = r.job_id JOIN agents a ON a.id = r.agent_id`
 
 func scanRun(sc interface{ Scan(...any) error }) (*runView, error) {
 	var v runView
 	var ec sql.NullInt64
 	var fin sql.NullInt64
-	if err := sc.Scan(&v.ID, &v.JobID, &v.JobName, &v.AgentName, &v.Trigger, &v.Status, &ec, &v.Summary, &v.StartedAt, &fin); err != nil {
+	if err := sc.Scan(&v.ID, &v.JobID, &v.JobName, &v.AgentName, &v.Trigger, &v.Status, &ec, &v.Summary, &v.StartedAt, &fin,
+		&v.Bytes, &v.Transferred, &v.Deleted, &v.Versioned, &v.Errors); err != nil {
 		return nil, err
 	}
 	if ec.Valid {

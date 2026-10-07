@@ -13,6 +13,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -221,7 +222,7 @@ func (a *Agent) runJob(parent context.Context, jobID, trigger string) {
 	fctx, fcancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer fcancel()
 	lg.close(fctx)
-	if err := a.api.FinishRun(fctx, runID, proto.FinishRunRequest{Status: status, ExitCode: code, Summary: summary}); err != nil {
+	if err := a.api.FinishRun(fctx, runID, proto.FinishRunRequest{Status: status, ExitCode: code, Summary: summary, RunStats: lg.stats.snapshot()}); err != nil {
 		log.Printf("job %q: could not report final status: %v", job.Name, err)
 	}
 	log.Printf("job %q finished: %s (%s)", job.Name, status, summary)
@@ -291,6 +292,7 @@ func (a *Agent) execute(ctx context.Context, ar *activeRun, job *proto.JobConfig
 		lg.agent("$ rclone %s", strings.Join(args, " "))
 
 		c, err := a.runRclone(ctx, args, rcloneEnv(job.Wasabi), lg)
+		lg.stats.endInvocation()
 		switch {
 		case ctx.Err() != nil:
 		case err != nil:
@@ -411,6 +413,7 @@ type runLogger struct {
 	api    *apiClient
 	runID  string
 	redact []string
+	stats  runStats
 
 	mu      sync.Mutex
 	seq     int64
@@ -442,6 +445,9 @@ func (l *runLogger) add(stream, line string) {
 	// echoed one it must not reach the dashboard's history.
 	for _, s := range l.redact {
 		line = strings.ReplaceAll(line, s, "***")
+	}
+	if stream != "agent" {
+		l.stats.observe(line)
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -552,4 +558,89 @@ func expiredVersions(dirs []string, now time.Time, days int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ---- Run statistics ------------------------------------------------------------------
+
+// runStats counts what rclone did from its INFO log lines, e.g.
+//
+//	INFO  : docs/a.txt: Copied (new)
+//	INFO  : docs/b.txt: Copied (server-side copy)   <- S3 has no move: copy into the
+//	INFO  : docs/b.txt: Deleted                     <- version folder + delete = 1 version
+//	INFO  : docs/c.txt: Moved (server-side)         <- backends with a native move
+//	INFO  : docs/d.txt: Deleted                     <- mirror sync deletion
+//	INFO  :    1.907 MiB / 1.907 MiB, 100%, 0 B/s, ETA -   <- stats line
+//
+// rclone prints cumulative bytes in each stats line, so the last one seen per
+// rclone invocation is that invocation's total.
+type runStats struct {
+	mu      sync.Mutex
+	total   proto.RunStats
+	cur     int64
+	copying map[string]bool // files server-side copied (into --backup-dir) and not yet deleted
+}
+
+// fileOf returns the file name in "INFO  : <name>: <event>".
+func fileOf(line, event string) string {
+	head := strings.TrimSuffix(line[:strings.LastIndex(line, event)], ": ")
+	if i := strings.Index(head, " : "); i >= 0 {
+		return head[i+3:]
+	}
+	return head
+}
+
+var statsLine = regexp.MustCompile(`:\s+([\d.]+) ([KMGTP]?i?B) / [\d.]+ [KMGTP]?i?B, (?:-|\d+%)`)
+
+func (s *runStats) observe(line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case strings.Contains(line, ": Copied (new)"), strings.Contains(line, ": Copied (replaced existing)"):
+		s.total.Transferred++
+	case strings.Contains(line, ": Moved (server-side)"):
+		s.total.Versioned++
+	case strings.Contains(line, ": Copied (server-side copy)"):
+		// The only server-side copies we cause are moves into --backup-dir.
+		if s.copying == nil {
+			s.copying = map[string]bool{}
+		}
+		s.copying[fileOf(line, ": Copied (server-side copy)")] = true
+		s.total.Versioned++
+	case strings.HasSuffix(line, ": Deleted"):
+		if f := fileOf(line, ": Deleted"); s.copying[f] {
+			delete(s.copying, f) // second half of a move, not a deletion
+		} else {
+			s.total.Deleted++
+		}
+	case strings.Contains(line, " ERROR : "):
+		s.total.Errors++
+	}
+	if m := statsLine.FindStringSubmatch(line); m != nil {
+		s.cur = parseSize(m[1], m[2])
+	}
+}
+
+// endInvocation adds the finished rclone process's byte count to the total.
+func (s *runStats) endInvocation() {
+	s.mu.Lock()
+	s.total.Bytes += s.cur
+	s.cur = 0
+	s.copying = nil
+	s.mu.Unlock()
+}
+
+func (s *runStats) snapshot() proto.RunStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total
+}
+
+func parseSize(num, unit string) int64 {
+	f, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0
+	}
+	mult := map[string]float64{"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40, "PiB": 1 << 50,
+		"KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12, "PB": 1e15}[unit]
+	return int64(f * mult)
 }

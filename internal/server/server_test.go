@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -528,5 +529,145 @@ func TestJobBackupTypeValidation(t *testing.T) {
 		if err := (&in).validate(); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+func TestOverview(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	db := h.srv.db
+	nowT := time.Now()
+	ago := func(d time.Duration) int64 { return nowT.Add(-d).Unix() }
+	mustExec := func(q string, a ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, a...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idA, _ := h.srv.createAgent("nas", "wbk_"+strings.Repeat("a", 40))
+	idB, _ := h.srv.createAgent("pi", "wbk_"+strings.Repeat("b", 40))
+	mustExec(`INSERT INTO wasabi_credentials (id,name,access_key,secret_key_enc,region,bucket,created_at) VALUES ('c','c','k','e','us-east-1','bkt',1)`)
+	job := func(id, agent, name string, enabled int, cron string) {
+		mustExec(`INSERT INTO backup_jobs (id,agent_id,credential_id,name,enabled,created_at,updated_at) VALUES (?,?,'c',?,?,?,?)`, id, agent, name, enabled, ago(30*24*time.Hour), 1)
+		if cron != "" {
+			mustExec(`INSERT INTO schedules (id,job_id,cron_expr,timezone,enabled) VALUES (?,?,?, 'UTC', 1)`, id+"s", id, cron)
+		}
+	}
+	job("ok", idA, "docs", 1, "0 * * * *")       // hourly, succeeded 30 min ago
+	job("fail", idA, "photos", 1, "")            // last run failed
+	job("late", idB, "etc", 1, "0 * * * *")      // hourly, last success 5h ago -> overdue
+	job("paused", idB, "old", 0, "0 * * * *")    // disabled
+	job("new", idB, "fresh", 1, "")              // never run, no schedule
+	job("pi-ok", idB, "pi docs", 1, "0 * * * *") // fine, but its agent is offline
+	n := 0
+	run := func(jobID, agent, trigger, status string, start time.Duration, bytes int64) {
+		n++
+		st := ago(start)
+		mustExec(`INSERT INTO runs (id,job_id,agent_id,trigger,status,started_at,finished_at,updated_at,bytes,files_transferred) VALUES (?,?,?,?,?,?,?,?,?,1)`,
+			fmt.Sprintf("r%d", n), jobID, agent, trigger, status, st, st+60, st+60, bytes)
+	}
+	run("ok", idA, "schedule", "success", 30*time.Minute, 1000)
+	run("ok", idA, "schedule", "success", 26*time.Hour, 500)
+	run("fail", idA, "manual", "success", 3*time.Hour, 200)
+	run("fail", idA, "schedule", "failed", 2*time.Hour, 0)
+	run("late", idB, "schedule", "success", 5*time.Hour, 300)
+	run("pi-ok", idB, "schedule", "success", 20*time.Minute, 0)
+	run("ok", idA, "dry-run", "success", 10*time.Minute, 0)   // tests never count as backups
+	run("ok", idA, "verify", "failed", 5*time.Minute, 0)      // ...but a failed verify is flagged
+	run("ok", idA, "schedule", "success", 10*24*time.Hour, 9) // previous 7-day period
+
+	// nas is online; pi stays offline.
+	h.fakeAgent("wbk_"+strings.Repeat("a", 40), func(env proto.Envelope) proto.Envelope { return proto.Envelope{ID: env.ID, Type: proto.MsgResult} })
+	waitFor(t, func() bool { return h.srv.hub.Online(idA) })
+
+	get := func(q string) map[string]any {
+		t.Helper()
+		code, b := h.do("GET", "/api/overview?"+q, nil, "")
+		if code != 200 {
+			t.Fatalf("overview %s: %d %s", q, code, b)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		return m
+	}
+	o := get("days=7&tz=UTC")
+	tot := o["totals"].(map[string]any)
+	if tot["runs"].(float64) != 6 || tot["success"].(float64) != 5 || tot["failed"].(float64) != 1 || tot["bytes"].(float64) != 2000 {
+		t.Errorf("totals = %v", tot)
+	}
+	if r := tot["success_rate"].(float64); r < 0.833 || r > 0.834 {
+		t.Errorf("success rate = %v, want 5/6", r)
+	}
+	if prev := o["previous"].(map[string]any); prev["runs"].(float64) != 1 || prev["bytes"].(float64) != 9 {
+		t.Errorf("previous period = %v", prev)
+	}
+	series := o["series"].([]any)
+	if len(series) != 7 {
+		t.Fatalf("7-day series has %d buckets", len(series))
+	}
+	var sumS, sumF float64
+	for _, b := range series {
+		sumS += b.(map[string]any)["success"].(float64)
+		sumF += b.(map[string]any)["failed"].(float64)
+	}
+	if sumS != 5 || sumF != 1 {
+		t.Errorf("series sums success=%v failed=%v, want 5/1", sumS, sumF)
+	}
+
+	healthOf := map[string]string{}
+	for _, j := range o["jobs"].([]any) {
+		m := j.(map[string]any)
+		healthOf[m["id"].(string)] = m["health"].(string)
+	}
+	want := map[string]string{"ok": "ok", "fail": "failing", "late": "overdue", "paused": "paused", "new": "never", "pi-ok": "offline"}
+	for id, w := range want {
+		if healthOf[id] != w {
+			t.Errorf("job %s health = %q, want %q", id, healthOf[id], w)
+		}
+	}
+	kinds := map[string]string{}
+	for _, a := range o["attention"].([]any) {
+		m := a.(map[string]any)
+		kinds[m["kind"].(string)+":"+fmt.Sprint(m["job_id"], m["agent_id"])] = m["severity"].(string)
+	}
+	if kinds["failing:fail<nil>"] != "critical" || kinds["overdue:late<nil>"] != "warning" || kinds["verify:ok<nil>"] != "warning" {
+		t.Errorf("attention = %v", kinds)
+	}
+	// pi is offline with scheduled work, so it is critical; nas is online.
+	if kinds["offline:<nil>"+idB] != "critical" || kinds["offline:<nil>"+idA] != "" {
+		t.Errorf("offline agent with scheduled jobs should be critical, online one absent: %v", kinds)
+	}
+	if ag := o["agents"].(map[string]any); ag["online"].(float64) != 1 || ag["total"].(float64) != 2 {
+		t.Errorf("agents = %v", ag)
+	}
+	if len(o["recent_failures"].([]any)) != 2 { // the failed backup and the failed verify
+		t.Errorf("recent failures = %v", o["recent_failures"])
+	}
+
+	// Agent filter scopes everything.
+	f := get("days=7&agent_id=" + idB)
+	if f["totals"].(map[string]any)["runs"].(float64) != 2 || len(f["jobs"].([]any)) != 4 {
+		t.Errorf("agent filter: totals=%v jobs=%d", f["totals"], len(f["jobs"].([]any)))
+	}
+	// 24h view uses hourly buckets.
+	d := get("days=1")
+	if len(d["series"].([]any)) != 24 {
+		t.Errorf("24h view has %d buckets, want 24", len(d["series"].([]any)))
+	}
+}
+
+func TestExpectedIntervalUsesLongestGap(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC) // a Wednesday
+	if iv := expectedInterval([]scheduleView{{CronExpr: "0 2 * * 1-5", Timezone: "UTC", Enabled: true}}, now); iv != 72*time.Hour {
+		t.Errorf("weekday schedule interval = %v, want 72h (Fri -> Mon)", iv)
+	}
+	if iv := expectedInterval([]scheduleView{{CronExpr: "0 * * * *", Timezone: "UTC", Enabled: true}, {CronExpr: "0 3 * * *", Timezone: "UTC", Enabled: true}}, now); iv != time.Hour {
+		t.Errorf("hourly+daily = %v, want 1h", iv)
+	}
+	if iv := expectedInterval([]scheduleView{{CronExpr: "0 3 1 * *", Timezone: "UTC", Enabled: true}}, now); iv < 28*24*time.Hour {
+		t.Errorf("monthly = %v", iv)
+	}
+	if expectedInterval(nil, now) != 0 {
+		t.Error("no schedule => 0")
 	}
 }

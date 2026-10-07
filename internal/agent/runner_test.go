@@ -251,3 +251,40 @@ func TestSchedulerAppliesOnlyEnabledValidSchedules(t *testing.T) {
 		t.Errorf("active entries = %d, want 1 (disabled job and invalid spec skipped)", n)
 	}
 }
+
+func TestRunStatsFromRcloneOutput(t *testing.T) {
+	var s runStats
+	for _, l := range []string{
+		"2026/10/07 10:00:00 INFO  : a: Moved (server-side)",
+		"2026/10/07 10:00:00 INFO  : b: Copied (new)",
+		"2026/10/07 10:00:00 INFO  : a: Copied (replaced existing)",
+		"2026/10/07 10:00:00 INFO  : zz: Moved (server-side)",
+		"2026/10/07 10:00:00 INFO  : zz: Moved into backup dir",
+		"2026/10/07 10:00:00 INFO  : old: Deleted",
+		"2026/10/07 10:00:00 ERROR : x: Failed to copy: permission denied",
+		"2026/10/07 10:00:00 INFO  :    512 KiB / 1.907 MiB, 26%, 1 MiB/s, ETA 1s",
+		"2026/10/07 10:00:01 INFO  :    1.907 MiB / 1.907 MiB, 100%, 0 B/s, ETA -",
+	} {
+		s.observe(l)
+	}
+	s.endInvocation()
+	// S3: a move into the version folder is a server-side copy plus a delete.
+	for _, l := range []string{
+		"2026/10/07 11:18:10 INFO  : sub dir/d1.txt: Copied (server-side copy)",
+		"2026/10/07 11:18:10 INFO  : sub dir/d1.txt: Deleted",
+		"2026/10/07 11:18:10 INFO  : sub dir/d1.txt: Copied (new)",
+		"2026/10/07 11:18:10 INFO  : d3.txt: Copied (server-side copy)",
+		"2026/10/07 11:18:10 INFO  : d3.txt: Deleted",
+		"2026/10/07 11:18:10 INFO  : d3.txt: Moved into backup dir",
+		"2026/10/07 11:18:10 INFO  : gone.txt: Deleted", // a real deletion
+		"2026/10/07 10:00:02 INFO  :           2 B / 2 B, 100%, 0 B/s, ETA -",
+	} {
+		s.observe(l)
+	}
+	s.endInvocation()
+	got := s.snapshot()
+	wantBytes := int64(1999634) + 2 // 1.907 MiB + 2 B
+	if got.Transferred != 3 || got.Versioned != 4 || got.Deleted != 2 || got.Errors != 1 || got.Bytes != wantBytes {
+		t.Errorf("stats = %+v, want 3 transferred, 4 versioned, 2 deleted, 1 error, %d bytes", got, wantBytes)
+	}
+}
