@@ -30,9 +30,31 @@ open http://localhost:8080
 To back up real directories, mount them **read-only** into the agent (see the commented examples in
 `docker-compose.yml`): `- /home:/host/home:ro`. Anything under `/host` or `/data` appears in the file tree.
 
-For production, run only the `server` service centrally behind HTTPS (set `COOKIE_SECURE=true`) and run
-`docker-compose.agent.yml` on each machine to back up, with `AGENT_SERVER_URL=https://…` and the key the
-dashboard shows once when you add the agent.
+## Installing the agent on a device
+
+In the dashboard, open **Agents → Add agent**. It shows a ready-to-paste command:
+
+```bash
+curl -fsSL https://backup.example.com/install.sh | sudo sh -s -- --url https://backup.example.com --key wbk_…
+```
+
+Run it on any Linux machine with systemd (x86_64, arm64 or armv7, so Raspberry Pis work too). It:
+
+1. downloads the ~7 MB agent binary for the machine's CPU from the dashboard and verifies its checksum;
+2. installs rclone from the official release (checksum-verified), or reuses an existing `rclone`;
+3. writes `/etc/wasabi-agent/agent.env` (mode 0600) and a `wasabi-agent` systemd service that runs with a
+   read-only view of the filesystem and only the `CAP_DAC_READ_SEARCH` capability;
+4. starts it. The device appears **online** in the dashboard within seconds.
+
+Options: `--roots /data,/mnt/photos` sets what the dashboard may browse (default
+`/home,/root,/etc,/srv,/opt,/var/www`; missing ones are skipped). Rerunning the command upgrades or reconfigures.
+Remove it with `curl -fsSL https://backup.example.com/install.sh | sudo sh -s -- --uninstall`.
+Logs: `journalctl -u wasabi-agent -f`. The device needs `curl` (or `wget`), plus `unzip` if rclone isn't installed.
+
+Prefer Docker on the device? Use `docker-compose.agent.yml` with `AGENT_SERVER_URL` and `AGENT_API_KEY` instead.
+
+For production, put the dashboard behind HTTPS (set `COOKIE_SECURE=true`): the install command and the agent's
+traffic carry its API key.
 
 ## Architecture
 
@@ -109,7 +131,7 @@ agent_config_rev(agent_id, rev)                                          -- chan
 ## Configuration
 
 **Server** (env): `SERVER_SECRET` (≥32 chars, back it up), `ADMIN_USER`, `ADMIN_PASSWORD`, `LISTEN` (`:8080`),
-`DATA_DIR` (`/data`), `COOKIE_SECURE`, `BOOTSTRAP_AGENT_NAME` / `BOOTSTRAP_AGENT_KEY` (optional pre-enrolment).
+`DATA_DIR` (`/data`), `COOKIE_SECURE`, `AGENT_DIST_DIR` (`/dist`, agent binaries for the installer), `BOOTSTRAP_AGENT_NAME` / `BOOTSTRAP_AGENT_KEY` (optional pre-enrolment).
 
 **Agent** (env): `AGENT_SERVER_URL`, `AGENT_API_KEY` or `AGENT_API_KEY_FILE`, `AGENT_BROWSE_ROOTS` (`/host,/data`),
 `AGENT_MAX_CONCURRENT` (1), `AGENT_CA_FILE` (private CA), `AGENT_HOSTNAME`, `AGENT_RCLONE_PATH`.

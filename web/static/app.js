@@ -166,10 +166,22 @@ async function viewAgents() {
 }
 
 function showKey(box, name, key) {
-  clear(box).append(h('div', { class: 'card mb-4 border-emerald-700' },
-    h('p', { class: 'mb-2 text-sm' }, 'API key for ', h('b', {}, name), '. Copy it now; it is not shown again.'),
-    h('code', { class: 'block break-all rounded bg-slate-950 p-2 text-xs text-emerald-300' }, key),
-    h('p', { class: 'mt-2 text-xs text-slate-400' }, 'Set it on the agent as AGENT_API_KEY (or mount a file and set AGENT_API_KEY_FILE).')));
+  const origin = location.origin;
+  const cmd = `curl -fsSL ${origin}/install.sh | sudo sh -s -- --url ${origin} --key ${key}`;
+  const copy = (text, btn) => async () => {
+    try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+    catch { toast('Copy failed: select the text and copy it manually', true); }
+  };
+  const cmdBtn = h('button', { class: 'btn btn-primary shrink-0' }, 'Copy');
+  cmdBtn.addEventListener('click', copy(cmd, cmdBtn));
+  clear(box).append(h('div', { class: 'card mb-4 space-y-3 border-emerald-700' },
+    h('p', { class: 'text-sm' }, 'Install ', h('b', {}, name), ': run this on the Linux machine you want to back up. It contains the agent\u2019s key, which is not shown again.'),
+    h('div', { class: 'flex items-start gap-2' },
+      h('code', { class: 'block flex-1 break-all rounded bg-slate-950 p-2 text-xs text-emerald-300 select-all' }, cmd), cmdBtn),
+    h('p', { class: 'text-xs text-slate-400' },
+      'Needs systemd and curl. It installs the agent and rclone and starts the service, which then shows up here as online. ',
+      'By default the dashboard can browse /home, /root, /etc, /srv, /opt and /var/www; append --roots /data,/mnt/photos to change that. ',
+      'Docker instead: use docker-compose.agent.yml with AGENT_API_KEY=', h('span', { class: 'font-mono' }, key), '.')));
 }
 
 // ---------- agent detail: file explorer + job editor -----------------------------

@@ -21,6 +21,7 @@ type Config struct {
 	AdminUser     string // ADMIN_USER, default "admin"
 	AdminPassword string // ADMIN_PASSWORD; generated and logged once if empty on first boot
 	CookieSecure  bool   // COOKIE_SECURE=true when served over HTTPS (reverse proxy)
+	AgentDistDir  string // AGENT_DIST_DIR: prebuilt agent binaries served at /download, default "/dist"
 
 	// Optional: pre-enrol an agent so `docker compose up` works with no manual step.
 	BootstrapAgentName string // BOOTSTRAP_AGENT_NAME
@@ -38,6 +39,7 @@ func LoadConfig() (*Config, error) {
 		AdminUser:          env("ADMIN_USER", "admin"),
 		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
 		CookieSecure:       strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true"),
+		AgentDistDir:       env("AGENT_DIST_DIR", "/dist"),
 		BootstrapAgentName: env("BOOTSTRAP_AGENT_NAME", "demo-agent"),
 		BootstrapAgentKey:  os.Getenv("BOOTSTRAP_AGENT_KEY"),
 	}

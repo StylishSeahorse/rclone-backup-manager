@@ -116,6 +116,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agent/runs/{id}/logs", agent(s.agentRunLogs))
 	mux.HandleFunc("POST /api/agent/runs/{id}/finish", agent(s.agentFinishRun))
 
+	// Agent installer + binaries (public)
+	mux.HandleFunc("GET /install.sh", s.installScript)
+	mux.HandleFunc("GET /download/{file}", s.download)
+
 	// Embedded UI
 	static, _ := fs.Sub(web.Static, "static")
 	mux.Handle("/", http.FileServerFS(static))

@@ -25,11 +25,19 @@ ARG VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/server ./cmd/server \
- && mkdir -p /out/data
+ && mkdir -p /out/data /out/dist
+# Agent binaries for every supported device CPU, served at /download for the one-line installer.
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    for t in amd64: arm64: arm:7; do \
+      arch=${t%%:*}; arm=${t#*:}; name=$arch; [ "$arch" = arm ] && name=armv7; \
+      CGO_ENABLED=0 GOOS=linux GOARCH=$arch GOARM=$arm go build -trimpath \
+        -ldflags "-s -w -X main.version=${VERSION}" -o /out/dist/wasabi-agent-linux-$name ./cmd/agent || exit 1; \
+    done
 
 # ---- 3. Minimal runtime: no shell, no package manager, non-root ------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/server /server
+COPY --from=build /out/dist /dist
 # Pre-create the data dir owned by the nonroot user so a fresh named volume is writable.
 COPY --from=build --chown=65532:65532 /out/data /data
 ENV DATA_DIR=/data LISTEN=:8080
