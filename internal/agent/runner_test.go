@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stylishseahorse/rclone-backup-manager/internal/proto"
 )
@@ -46,7 +47,7 @@ func TestCredentialsOnlyInEnvironment(t *testing.T) {
 			t.Errorf("agent environment leaked into rclone: %q", mustNot)
 		}
 	}
-	args := strings.Join(rcloneArgs("copy", true, "/data", ":s3:b/x"), " ")
+	args := strings.Join(rcloneArgs(proto.ModeBackup, true, "/data", ":s3:b/x", ":s3:b/.versions/j/t/data"), " ")
 	if strings.Contains(args, wasabi.SecretKey) || strings.Contains(args, wasabi.AccessKey) {
 		t.Error("credentials must never appear on the command line")
 	}
@@ -71,16 +72,84 @@ func TestEndpointSelectsProvider(t *testing.T) {
 	}
 }
 
-func TestRcloneArgsVerb(t *testing.T) {
-	cases := []struct {
-		mode  string
-		isDir bool
-		want  string
-	}{{"copy", true, "copy"}, {"sync", true, "sync"}, {"sync", false, "copyto"}, {"copy", false, "copyto"}}
-	for _, c := range cases {
-		if got := rcloneArgs(c.mode, c.isDir, "/s", ":s3:b/d")[0]; got != c.want {
-			t.Errorf("mode=%s isDir=%v: verb %s, want %s", c.mode, c.isDir, got, c.want)
+func TestRcloneArgsBackupTypes(t *testing.T) {
+	join := func(a []string) string { return strings.Join(a, " ") }
+	// Mirror sync: deletions propagate, no history.
+	if got := join(rcloneArgs(proto.ModeBackup, true, "/d", ":s3:b/h/d", "")); !strings.HasPrefix(got, "sync /d :s3:b/h/d") || strings.Contains(got, "--backup-dir") {
+		t.Errorf("sync dir: %s", got)
+	}
+	// Incremental: same mirror, but replaced/deleted files go to the version folder.
+	got := join(rcloneArgs(proto.ModeBackup, true, "/d", ":s3:b/h/d", ":s3:b/h/.versions/j1/2026-10-07T020000Z/d"))
+	if !strings.HasPrefix(got, "sync /d :s3:b/h/d") || !strings.Contains(got, "--backup-dir :s3:b/h/.versions/j1/2026-10-07T020000Z/d") {
+		t.Errorf("incremental dir: %s", got)
+	}
+	if got := rcloneArgs(proto.ModeBackup, false, "/d/f.txt", ":s3:b/h/d/f.txt", ""); got[0] != "copyto" {
+		t.Errorf("single file verb = %s, want copyto", got[0])
+	}
+	dry := join(rcloneArgs(proto.ModeDryRun, true, "/data/x", ":s3:b/x", ":s3:b/v"))
+	if !strings.Contains(dry, "--dry-run") || !strings.Contains(dry, "--backup-dir") {
+		t.Errorf("dry run should simulate exactly what the backup does: %s", dry)
+	}
+	if strings.Contains(join(rcloneArgs(proto.ModeBackup, true, "/a", ":s3:b/a", "")), "--dry-run") {
+		t.Error("a real backup must not be a dry run")
+	}
+	v := join(rcloneArgs(proto.ModeVerify, true, "/data/x", ":s3:b/h/data/x", ":s3:b/v"))
+	if !strings.HasPrefix(v, "check /data/x :s3:b/h/data/x --one-way") || strings.Contains(v, "backup-dir") {
+		t.Errorf("verify dir: %s", v)
+	}
+	// A single file is checked through its parent, narrowed to a literal name.
+	f := rcloneArgs(proto.ModeVerify, false, "/data/a[1]*.txt", ":s3:b/h/data/a[1]*.txt", "")
+	if f[0] != "check" || f[1] != "/data" || f[2] != ":s3:b/h/data" || join(f[3:6]) != `--one-way --include /a\[1\]\*.txt` {
+		t.Errorf("verify file: %q", f)
+	}
+	for _, tr := range []string{"manual", "schedule", "", "bogus"} {
+		if modeFor(tr) != proto.ModeBackup {
+			t.Errorf("trigger %q should be a normal backup", tr)
 		}
+	}
+}
+
+func TestVersionsLayoutNeverOverlapsDestinations(t *testing.T) {
+	job := proto.JobConfig{ID: "job-1", DestPrefix: "backups"}
+	root := versionsRoot(wasabi, job, "nas")
+	if root != ":s3:my-bucket/backups/nas/.versions/job-1" {
+		t.Fatalf("versions root = %s", root)
+	}
+	for _, src := range []string{"/home", "/data/docs", "/v"} {
+		dst := remoteFor(wasabi, job, "nas", src)
+		if strings.HasPrefix(root+"/", dst+"/") || strings.HasPrefix(dst+"/", root+"/") {
+			t.Errorf("rclone refuses overlapping --backup-dir: dst %s vs %s", dst, root)
+		}
+	}
+}
+
+func TestExpiredVersions(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	dirs := []string{"2026-10-07T020000Z", "2026-09-30T020000Z", "2026-09-01T020000Z", "2026-08-01T000000Z", "not-a-version", "2026-09-07T110000Z"}
+	got := expiredVersions(dirs, now, 30)
+	want := "2026-08-01T000000Z 2026-09-01T020000Z 2026-09-07T110000Z"
+	if strings.Join(got, " ") != want {
+		t.Errorf("expired = %v, want %s (foreign folders untouched)", got, want)
+	}
+	if len(expiredVersions(dirs, now, 3650)) != 0 {
+		t.Error("nothing is older than 10 years")
+	}
+}
+
+func TestHintFor(t *testing.T) {
+	for msg, want := range map[string]string{
+		"api error SignatureDoesNotMatch: The request signature": "Secret key is wrong",
+		"api error InvalidAccessKeyId: ...":                      "Access key not recognised",
+		"api error NoSuchBucket: The specified bucket":           "Bucket does not exist (check the name and region)",
+		"dial tcp: lookup s3.nope.wasabisys.com: no such host":   "Endpoint host name does not resolve",
+		"something else entirely":                                "",
+	} {
+		if got := hintFor(msg); got != want {
+			t.Errorf("hintFor(%q) = %q, want %q", msg, got, want)
+		}
+	}
+	if got := lastMeaningfulLine("2026/10/07 10:00:00 ERROR : Attempt 1/1 failed\n2026/10/07 10:00:00 CRITICAL: Failed to lsf: boom\n"); got != "Failed to lsf: boom" {
+		t.Errorf("lastMeaningfulLine = %q", got)
 	}
 }
 

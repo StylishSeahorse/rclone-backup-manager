@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @source "../static/index.html";
 @source "../static/app.js";
+@source "../static/schedule.js";
 
 @layer components {
   .btn { @apply inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed; }

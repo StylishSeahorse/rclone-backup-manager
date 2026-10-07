@@ -36,6 +36,7 @@ type Agent struct {
 	conf    *proto.AgentConfig // in memory only, never persisted
 	running map[string]*activeRun
 	baseCtx context.Context
+	started time.Time
 	wg      sync.WaitGroup // in-flight runs
 }
 
@@ -106,6 +107,7 @@ func (a *Agent) startRun(jobID, trigger string) {
 // Run blocks until ctx is cancelled.
 func (a *Agent) Run(ctx context.Context) error {
 	a.baseCtx = ctx
+	a.started = time.Now()
 	log.Printf("agent %s starting: %s, browse roots %v", Version, a.rclone, a.scanner.Roots())
 	if strings.HasPrefix(a.cfg.ServerURL, "http://") {
 		log.Printf("WARNING: AGENT_SERVER_URL is plain http; credentials and your API key cross the network unencrypted. Use https:// outside a trusted network.")
@@ -272,8 +274,23 @@ func (a *Agent) session(ctx context.Context) error {
 		case proto.MsgRunNow:
 			var req proto.RunNowRequest
 			if json.Unmarshal(env.Payload, &req) == nil {
-				a.startRun(req.JobID, "manual")
+				trigger := "manual"
+				if req.Mode == proto.ModeDryRun || req.Mode == proto.ModeVerify {
+					trigger = req.Mode
+				}
+				a.startRun(req.JobID, trigger)
 			}
+		case proto.MsgTestCreds, proto.MsgStatus:
+			go func() { // may take seconds: never block the read loop
+				res, err := a.diagnose(ctx, env)
+				reply := proto.Envelope{ID: env.ID, Type: proto.MsgResult}
+				if err != nil {
+					reply.Error = err.Error()
+				} else {
+					reply.Payload, _ = json.Marshal(res)
+				}
+				_ = send(reply)
+			}()
 		case proto.MsgCancelRun:
 			var req proto.CancelRunRequest
 			if json.Unmarshal(env.Payload, &req) == nil {

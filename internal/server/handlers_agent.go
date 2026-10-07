@@ -125,7 +125,7 @@ func (s *Server) agentConfig(w http.ResponseWriter, r *http.Request) {
 	rev := s.rev(a.ID)
 	cfg := proto.AgentConfig{Revision: rev, AgentID: a.ID, Name: a.Name, Jobs: []proto.JobConfig{}}
 
-	rows, err := s.db.Query(`SELECT j.id, j.name, j.enabled, j.dest_prefix, c.id, c.access_key, c.secret_key_enc, c.region, c.bucket, c.endpoint
+	rows, err := s.db.Query(`SELECT j.id, j.name, j.enabled, j.dest_prefix, j.backup_type, j.retention_days, c.id, c.access_key, c.secret_key_enc, c.region, c.bucket, c.endpoint
 		FROM backup_jobs j JOIN wasabi_credentials c ON c.id = j.credential_id WHERE j.agent_id = ? ORDER BY j.name`, a.ID)
 	if err != nil {
 		dbErr(w, err)
@@ -140,7 +140,7 @@ func (s *Server) agentConfig(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var x row
 		var en int
-		if err := rows.Scan(&x.job.ID, &x.job.Name, &en, &x.job.DestPrefix, &x.credID,
+		if err := rows.Scan(&x.job.ID, &x.job.Name, &en, &x.job.DestPrefix, &x.job.BackupType, &x.job.Retention, &x.credID,
 			&x.job.Wasabi.AccessKey, &x.enc, &x.job.Wasabi.Region, &x.job.Wasabi.Bucket, &x.job.Wasabi.Endpoint); err != nil {
 			rows.Close()
 			dbErr(w, err)
@@ -202,7 +202,9 @@ func (s *Server) agentStartRun(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if in.Trigger != "schedule" && in.Trigger != "manual" {
+	switch in.Trigger {
+	case "schedule", "manual", proto.ModeDryRun, proto.ModeVerify:
+	default:
 		writeErr(w, 400, "invalid trigger")
 		return
 	}

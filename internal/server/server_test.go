@@ -165,10 +165,11 @@ func (h *harness) fakeAgent(key string, handle func(proto.Envelope) proto.Envelo
 			}
 			var env proto.Envelope
 			_ = json.Unmarshal(data, &env)
-			if env.ID == "" {
+			reply := handle(env)
+			if env.ID == "" { // notification: no reply expected
 				continue
 			}
-			out, _ := json.Marshal(handle(env))
+			out, _ := json.Marshal(reply)
 			_ = ws.Write(context.Background(), websocket.MessageText, out)
 		}
 	}()
@@ -333,4 +334,199 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met in time")
+}
+
+func TestSchedulePreviewAndNextRun(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	code, b := h.do("POST", "/api/schedules/preview", map[string]string{"cron_expr": "30 2 * * 1,3", "timezone": "Europe/Berlin"}, "")
+	var res struct{ Next []int64 }
+	if code != 200 || json.Unmarshal(b, &res) != nil || len(res.Next) != 5 {
+		t.Fatalf("preview: %d %s", code, b)
+	}
+	berlin, _ := time.LoadLocation("Europe/Berlin")
+	for i, ts := range res.Next {
+		lt := time.Unix(ts, 0).In(berlin)
+		if lt.Hour() != 2 || lt.Minute() != 30 || (lt.Weekday() != time.Monday && lt.Weekday() != time.Wednesday) {
+			t.Errorf("run %d at %v is not Mon/Wed 02:30 Berlin time", i, lt)
+		}
+		if i > 0 && ts <= res.Next[i-1] {
+			t.Error("preview times must increase")
+		}
+	}
+	for _, bad := range []map[string]string{{"cron_expr": "nope", "timezone": "UTC"}, {"cron_expr": "0 2 * * *", "timezone": "Mars/Base"}} {
+		if code, _ := h.do("POST", "/api/schedules/preview", bad, ""); code != 400 {
+			t.Errorf("preview %v = %d, want 400", bad, code)
+		}
+	}
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := nextRun([]scheduleView{
+		{CronExpr: "0 5 * * *", Timezone: "UTC", Enabled: true},
+		{CronExpr: "0 1 * * *", Timezone: "UTC", Enabled: false}, // disabled: ignored
+		{CronExpr: "0 3 * * *", Timezone: "UTC", Enabled: true},
+	}, now)
+	if got == nil || time.Unix(*got, 0).UTC().Hour() != 3 {
+		t.Errorf("nextRun = %v, want 03:00", got)
+	}
+	if nextRun(nil, now) != nil {
+		t.Error("no schedules => no next run")
+	}
+}
+
+func TestCredentialTestAndRunModesGoThroughAgent(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	// No agent online yet.
+	if code, _ := h.do("POST", "/api/credentials/test", map[string]any{"credential": map[string]string{"access_key": "AKIA12345678", "secret_key": "TOPSECRET-123456", "region": "us-east-1", "bucket": "bkt-1"}}, ""); code != 503 {
+		t.Errorf("test with no agent online = %d, want 503", code)
+	}
+	_, b := h.do("POST", "/api/agents", map[string]string{"name": "box"}, "")
+	var ag map[string]string
+	_ = json.Unmarshal(b, &ag)
+	_, b = h.do("POST", "/api/credentials", map[string]string{"name": "w", "access_key": "AKIA12345678", "secret_key": "TOPSECRET-123456", "region": "eu-central-1", "bucket": "bkt-1"}, "")
+	var cred map[string]any
+	_ = json.Unmarshal(b, &cred)
+
+	got := make(chan proto.Envelope, 10)
+	h.fakeAgent(ag["api_key"], func(env proto.Envelope) proto.Envelope {
+		got <- env
+		switch env.Type {
+		case proto.MsgTestCreds:
+			res, _ := json.Marshal(proto.CredentialTestResult{OK: true, Steps: []proto.TestStep{{Name: "Connect and list bucket", Status: "ok"}}})
+			return proto.Envelope{ID: env.ID, Type: proto.MsgResult, Payload: res}
+		case proto.MsgStatus:
+			res, _ := json.Marshal(proto.AgentStatus{Hostname: "box", RunningJobs: []string{}})
+			return proto.Envelope{ID: env.ID, Type: proto.MsgResult, Payload: res}
+		}
+		return proto.Envelope{}
+	})
+	waitFor(t, func() bool { return h.srv.hub.Online(ag["id"]) })
+	drain := func(typ string) proto.Envelope {
+		t.Helper()
+		for {
+			select {
+			case e := <-got:
+				if e.Type == typ {
+					return e
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("agent never received %s", typ)
+			}
+		}
+	}
+
+	// Editing a saved credential: blank secret means "use the stored one".
+	code, b := h.do("POST", "/api/credentials/test", map[string]any{"credential_id": cred["id"], "write_test": true,
+		"credential": map[string]string{"access_key": "AKIA12345678", "region": "eu-central-1", "bucket": "bkt-1"}}, "")
+	if code != 200 || !bytes.Contains(b, []byte(`"ok":true`)) || bytes.Contains(b, []byte("TOPSECRET")) {
+		t.Fatalf("credential test: %d %s", code, b)
+	}
+	var req proto.CredentialTestRequest
+	_ = json.Unmarshal(drain(proto.MsgTestCreds).Payload, &req)
+	if req.Wasabi.SecretKey != "TOPSECRET-123456" || req.Wasabi.Endpoint != "s3.eu-central-1.wasabisys.com" || !req.WriteTest {
+		t.Errorf("agent got %+v", req)
+	}
+	// Unsaved credential without a secret cannot be tested.
+	if code, _ := h.do("POST", "/api/credentials/test", map[string]any{"credential": map[string]string{"access_key": "AKIA12345678", "region": "us-east-1", "bucket": "bkt-1"}}, ""); code != 400 {
+		t.Errorf("secretless test = %d, want 400", code)
+	}
+
+	// Agent connection test.
+	code, b = h.do("GET", "/api/agents/"+ag["id"]+"/status", nil, "")
+	if code != 200 || !bytes.Contains(b, []byte(`"rtt_ms"`)) || !bytes.Contains(b, []byte(`"hostname":"box"`)) {
+		t.Errorf("status: %d %s", code, b)
+	}
+
+	// Run modes reach the agent; unknown modes are refused.
+	code, b = h.do("POST", "/api/jobs", map[string]any{"agent_id": ag["id"], "credential_id": cred["id"], "name": "j", "enabled": true,
+		"paths": []proto.PathConfig{{Path: "/data/x", Mode: "copy"}}, "schedules": []any{}}, "")
+	var job map[string]any
+	_ = json.Unmarshal(b, &job)
+	if code, _ := h.do("POST", "/api/jobs/"+job["id"].(string)+"/run", map[string]string{"mode": "rm-rf"}, ""); code != 400 {
+		t.Errorf("bogus mode = %d, want 400", code)
+	}
+	if code, _ := h.do("POST", "/api/jobs/"+job["id"].(string)+"/run", map[string]string{"mode": "verify"}, ""); code != 202 {
+		t.Errorf("verify run = %d", code)
+	}
+	var rn proto.RunNowRequest
+	_ = json.Unmarshal(drain(proto.MsgRunNow).Payload, &rn)
+	if rn.Mode != proto.ModeVerify {
+		t.Errorf("agent got mode %q, want verify", rn.Mode)
+	}
+	if code, _ := h.do("POST", "/api/agent/runs", proto.StartRunRequest{JobID: job["id"].(string), Trigger: "dry-run"}, ag["api_key"]); code != 201 {
+		t.Errorf("agent could not register a dry-run: %d", code)
+	}
+	if code, _ := h.do("POST", "/api/agent/runs", proto.StartRunRequest{JobID: job["id"].(string), Trigger: "evil"}, ag["api_key"]); code != 400 {
+		t.Errorf("unknown trigger accepted: %d", code)
+	}
+}
+
+func TestMigrateOldDatabaseKeepsSyncJobsAsSync(t *testing.T) {
+	dir := t.TempDir()
+	old, err := openRaw(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pre-backup_type schema, with one per-path "sync" job and one "copy" job.
+	for _, q := range []string{
+		`CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, api_key_hash TEXT NOT NULL UNIQUE, hostname TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '', os TEXT NOT NULL DEFAULT '', rclone_ver TEXT NOT NULL DEFAULT '', browse_roots TEXT NOT NULL DEFAULT '[]', last_seen_at BIGINT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL)`,
+		`CREATE TABLE wasabi_credentials (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, access_key TEXT NOT NULL, secret_key_enc TEXT NOT NULL, region TEXT NOT NULL, bucket TEXT NOT NULL, endpoint TEXT NOT NULL DEFAULT '', created_at BIGINT NOT NULL)`,
+		`CREATE TABLE backup_jobs (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, credential_id TEXT NOT NULL, name TEXT NOT NULL, dest_prefix TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE TABLE backup_paths (id TEXT NOT NULL PRIMARY KEY, job_id TEXT NOT NULL, path TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'copy')`,
+		`INSERT INTO backup_jobs VALUES ('mirror','a','c','m','',1,1,1), ('plain','a','c','p','',1,1,1)`,
+		`INSERT INTO backup_paths VALUES ('p1','mirror','/x','sync'), ('p2','plain','/y','copy')`,
+	} {
+		if _, err := old.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old.Close()
+
+	db, err := openDB(dir)
+	if err != nil {
+		t.Fatalf("upgrade failed: %v", err)
+	}
+	defer db.Close()
+	for id, want := range map[string]string{"mirror": "sync", "plain": "incremental"} {
+		var bt string
+		var keep int
+		if err := db.QueryRow(`SELECT backup_type, retention_days FROM backup_jobs WHERE id = ?`, id).Scan(&bt, &keep); err != nil || bt != want || keep != 30 {
+			t.Errorf("job %s: type=%q keep=%d err=%v, want %s/30", id, bt, keep, err, want)
+		}
+	}
+	db.Close()
+	if db2, err := openDB(dir); err != nil { // migrating twice must be a no-op
+		t.Errorf("second open: %v", err)
+	} else {
+		db2.Close()
+	}
+}
+
+func TestJobBackupTypeValidation(t *testing.T) {
+	base := func() jobInput {
+		return jobInput{Name: "n", CredentialID: "c", Paths: []proto.PathConfig{{Path: "/data/x"}}}
+	}
+	in := base()
+	if err := (&in).validate(); err != nil || in.BackupType != "incremental" || in.RetentionDays == nil || *in.RetentionDays != 30 {
+		t.Errorf("defaults: %v %q %v", err, in.BackupType, in.RetentionDays)
+	}
+	zero := 0
+	in = base()
+	in.BackupType, in.RetentionDays = "sync", &zero
+	if err := (&in).validate(); err != nil {
+		t.Errorf("sync with retention 0 rejected: %v", err)
+	}
+	neg := -1
+	for name, mut := range map[string]func(*jobInput){
+		"bad type":         func(j *jobInput) { j.BackupType = "copy-everything" },
+		"negative keep":    func(j *jobInput) { j.RetentionDays = &neg },
+		"versions is ours": func(j *jobInput) { j.Paths = []proto.PathConfig{{Path: "/.versions/x"}} },
+	} {
+		in := base()
+		mut(&in)
+		if err := (&in).validate(); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
 }

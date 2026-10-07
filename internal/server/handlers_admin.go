@@ -317,16 +317,19 @@ func (s *Server) bumpAgentsUsingCredential(credID string) {
 // ================================ Jobs ========================================
 
 type jobView struct {
-	ID           string             `json:"id"`
-	AgentID      string             `json:"agent_id"`
-	AgentName    string             `json:"agent_name"`
-	CredentialID string             `json:"credential_id"`
-	Name         string             `json:"name"`
-	DestPrefix   string             `json:"dest_prefix"`
-	Enabled      bool               `json:"enabled"`
-	Paths        []proto.PathConfig `json:"paths"`
-	Schedules    []scheduleView     `json:"schedules"`
-	LastRun      *runView           `json:"last_run"`
+	ID            string             `json:"id"`
+	AgentID       string             `json:"agent_id"`
+	AgentName     string             `json:"agent_name"`
+	CredentialID  string             `json:"credential_id"`
+	Name          string             `json:"name"`
+	DestPrefix    string             `json:"dest_prefix"`
+	Enabled       bool               `json:"enabled"`
+	BackupType    string             `json:"backup_type"`
+	RetentionDays int                `json:"retention_days"`
+	Paths         []proto.PathConfig `json:"paths"`
+	Schedules     []scheduleView     `json:"schedules"`
+	LastRun       *runView           `json:"last_run"`
+	NextRun       *int64             `json:"next_run"` // unix seconds; nil if disabled/unscheduled
 }
 
 type scheduleView struct {
@@ -336,13 +339,15 @@ type scheduleView struct {
 }
 
 type jobInput struct {
-	AgentID      string             `json:"agent_id"`
-	CredentialID string             `json:"credential_id"`
-	Name         string             `json:"name"`
-	DestPrefix   string             `json:"dest_prefix"`
-	Enabled      bool               `json:"enabled"`
-	Paths        []proto.PathConfig `json:"paths"`
-	Schedules    []scheduleView     `json:"schedules"`
+	AgentID       string             `json:"agent_id"`
+	CredentialID  string             `json:"credential_id"`
+	Name          string             `json:"name"`
+	DestPrefix    string             `json:"dest_prefix"`
+	Enabled       bool               `json:"enabled"`
+	BackupType    string             `json:"backup_type"`    // "incremental" (default) | "sync"
+	RetentionDays *int               `json:"retention_days"` // incremental: days to keep versions; 0 = forever; default 30
+	Paths         []proto.PathConfig `json:"paths"`
+	Schedules     []scheduleView     `json:"schedules"`
 }
 
 var prefixRe = regexp.MustCompile(`^[A-Za-z0-9._\- /]{0,200}$`)
@@ -365,6 +370,20 @@ func (in *jobInput) validate() error {
 			return errors.New("invalid destination prefix")
 		}
 	}
+	switch in.BackupType {
+	case "":
+		in.BackupType = proto.BackupIncremental
+	case proto.BackupIncremental, proto.BackupSync:
+	default:
+		return errors.New("backup type must be incremental or sync")
+	}
+	if in.RetentionDays == nil {
+		d := 30
+		in.RetentionDays = &d
+	}
+	if *in.RetentionDays < 0 || *in.RetentionDays > 3650 {
+		return errors.New("keep versions for 0 (forever) to 3650 days")
+	}
 	if len(in.Paths) == 0 {
 		return errors.New("select at least one path to back up")
 	}
@@ -375,7 +394,7 @@ func (in *jobInput) validate() error {
 	for i := range in.Paths {
 		p := &in.Paths[i]
 		if p.Mode == "" {
-			p.Mode = "copy"
+			p.Mode = "copy" // legacy per-path field; the job's backup_type decides
 		}
 		if p.Mode != "copy" && p.Mode != "sync" {
 			return fmt.Errorf("invalid mode %q for %s", p.Mode, p.Path)
@@ -385,6 +404,9 @@ func (in *jobInput) validate() error {
 		}
 		if p.Path == "/" {
 			return errors.New("refusing to back up the filesystem root; pick specific directories")
+		}
+		if p.Path == "/.versions" || strings.HasPrefix(p.Path, "/.versions/") {
+			return errors.New("/.versions is reserved for incremental version history")
 		}
 		if seen[p.Path] {
 			return fmt.Errorf("duplicate path %s", p.Path)
@@ -424,7 +446,7 @@ func (s *Server) loadJob(id string) (*jobView, error) {
 	return &jobs[0], nil
 }
 
-const jobSelect = `SELECT j.id, j.agent_id, a.name, j.credential_id, j.name, j.dest_prefix, j.enabled
+const jobSelect = `SELECT j.id, j.agent_id, a.name, j.credential_id, j.name, j.dest_prefix, j.enabled, j.backup_type, j.retention_days
 	FROM backup_jobs j JOIN agents a ON a.id = j.agent_id`
 
 func (s *Server) scanJobs(rows *sql.Rows) ([]jobView, error) {
@@ -433,7 +455,7 @@ func (s *Server) scanJobs(rows *sql.Rows) ([]jobView, error) {
 	for rows.Next() {
 		var j jobView
 		var en int
-		if err := rows.Scan(&j.ID, &j.AgentID, &j.AgentName, &j.CredentialID, &j.Name, &j.DestPrefix, &en); err != nil {
+		if err := rows.Scan(&j.ID, &j.AgentID, &j.AgentName, &j.CredentialID, &j.Name, &j.DestPrefix, &en, &j.BackupType, &j.RetentionDays); err != nil {
 			return nil, err
 		}
 		j.Enabled = en == 1
@@ -475,6 +497,9 @@ func (s *Server) scanJobs(rows *sql.Rows) ([]jobView, error) {
 		}
 		sr.Close()
 		j.LastRun = s.lastRun(j.ID)
+		if j.Enabled {
+			j.NextRun = nextRun(j.Schedules, time.Now())
+		}
 	}
 	return jobs, nil
 }
@@ -542,8 +567,8 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO backup_jobs (id, agent_id, credential_id, name, dest_prefix, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
-		id, in.AgentID, in.CredentialID, in.Name, in.DestPrefix, b2i(in.Enabled), now(), now()); err != nil {
+	if _, err := tx.Exec(`INSERT INTO backup_jobs (id, agent_id, credential_id, name, dest_prefix, enabled, backup_type, retention_days, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		id, in.AgentID, in.CredentialID, in.Name, in.DestPrefix, b2i(in.Enabled), in.BackupType, *in.RetentionDays, now(), now()); err != nil {
 		if strings.Contains(err.Error(), "FOREIGN KEY") {
 			writeErr(w, 400, "unknown agent or credential")
 			return
@@ -591,8 +616,8 @@ func (s *Server) updateJob(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 	// agent_id is immutable: moving a job between machines would silently
 	// retarget paths that only make sense on the original host.
-	if _, err := tx.Exec(`UPDATE backup_jobs SET credential_id=?, name=?, dest_prefix=?, enabled=?, updated_at=? WHERE id=?`,
-		in.CredentialID, in.Name, in.DestPrefix, b2i(in.Enabled), now(), id); err != nil {
+	if _, err := tx.Exec(`UPDATE backup_jobs SET credential_id=?, name=?, dest_prefix=?, enabled=?, backup_type=?, retention_days=?, updated_at=? WHERE id=?`,
+		in.CredentialID, in.Name, in.DestPrefix, b2i(in.Enabled), in.BackupType, *in.RetentionDays, now(), id); err != nil {
 		if strings.Contains(err.Error(), "FOREIGN KEY") {
 			writeErr(w, 400, "unknown credential")
 			return
@@ -639,7 +664,20 @@ func (s *Server) runJobNow(w http.ResponseWriter, r *http.Request) {
 		dbErr(w, err)
 		return
 	}
-	if err := s.hub.Send(agentID, proto.MsgRunNow, proto.RunNowRequest{JobID: id}); err != nil {
+	// Optional body {"mode": "dry-run" | "verify"}; empty means a real backup.
+	var in struct {
+		Mode string `json:"mode"`
+	}
+	if r.ContentLength > 0 && !readJSON(w, r, &in) {
+		return
+	}
+	switch in.Mode {
+	case "", proto.ModeBackup, proto.ModeDryRun, proto.ModeVerify:
+	default:
+		writeErr(w, 400, "mode must be backup, dry-run or verify")
+		return
+	}
+	if err := s.hub.Send(agentID, proto.MsgRunNow, proto.RunNowRequest{JobID: id, Mode: in.Mode}); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}

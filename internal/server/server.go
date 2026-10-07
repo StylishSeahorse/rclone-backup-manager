@@ -92,11 +92,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/agents/{id}", admin(s.deleteAgent))
 	mux.HandleFunc("POST /api/agents/{id}/rotate-key", admin(s.rotateAgentKey))
 	mux.HandleFunc("GET /api/agents/{id}/browse", admin(s.browseAgent))
+	mux.HandleFunc("GET /api/agents/{id}/status", admin(s.agentStatus))
 
 	mux.HandleFunc("GET /api/credentials", admin(s.listCredentials))
 	mux.HandleFunc("POST /api/credentials", admin(s.createCredential))
 	mux.HandleFunc("PUT /api/credentials/{id}", admin(s.updateCredential))
 	mux.HandleFunc("DELETE /api/credentials/{id}", admin(s.deleteCredential))
+	mux.HandleFunc("POST /api/credentials/test", admin(s.testCredential))
+	mux.HandleFunc("POST /api/schedules/preview", admin(s.previewSchedule))
 
 	mux.HandleFunc("GET /api/jobs", admin(s.listJobs))
 	mux.HandleFunc("POST /api/jobs", admin(s.createJob))

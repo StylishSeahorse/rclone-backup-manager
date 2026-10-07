@@ -5,6 +5,7 @@ VERSION ?= dev
 test:
 	go vet ./...
 	go test -race -count=1 ./...
+	@if command -v node >/dev/null; then node web/schedule.test.js; else echo "node not found: skipping web/schedule.test.js"; fi
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/server ./cmd/server

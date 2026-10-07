@@ -15,13 +15,17 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-func openDB(dataDir string) (*sql.DB, error) {
+// openRaw opens the SQLite file without applying the schema.
+func openRaw(dataDir string) (*sql.DB, error) {
 	q := url.Values{}
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "busy_timeout(5000)")
-	dsn := "file:" + filepath.Join(dataDir, "dashboard.db") + "?" + q.Encode()
-	db, err := sql.Open("sqlite", dsn)
+	return sql.Open("sqlite", "file:"+filepath.Join(dataDir, "dashboard.db")+"?"+q.Encode())
+}
+
+func openDB(dataDir string) (*sql.DB, error) {
+	db, err := openRaw(dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +34,34 @@ func openDB(dataDir string) (*sql.DB, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return db, nil
+}
+
+// migrate upgrades databases created by older versions. CREATE TABLE IF NOT
+// EXISTS never adds columns, so each column added later is added here.
+func migrate(db *sql.DB) error {
+	has := func(table, col string) bool {
+		var n int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, col).Scan(&n)
+		return n > 0
+	}
+	if !has("backup_jobs", "backup_type") {
+		stmts := []string{
+			`ALTER TABLE backup_jobs ADD COLUMN backup_type TEXT NOT NULL DEFAULT 'incremental' CHECK (backup_type IN ('incremental', 'sync'))`,
+			`ALTER TABLE backup_jobs ADD COLUMN retention_days INTEGER NOT NULL DEFAULT 30`,
+			// Jobs that mirrored with per-path "sync" keep that behaviour.
+			`UPDATE backup_jobs SET backup_type = 'sync' WHERE id IN (SELECT job_id FROM backup_paths WHERE mode = 'sync')`,
+		}
+		for _, q := range stmts {
+			if _, err := db.Exec(q); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func now() int64 { return time.Now().Unix() }

@@ -91,7 +91,8 @@ scanner (`internal/agent/browse.go`, `os` + `path/filepath`) answers with JSON e
    credentials) on connect, whenever the dashboard pushes `config_changed`, and every 5 min as a safety net.
 2. Its own `robfig/cron` scheduler (no host cron) fires jobs on the schedules defined in the dashboard
    (5-field cron, `@every 6h`, per-schedule time zone). *Run now* and *Cancel* arrive over the same tunnel.
-3. For each path the runner executes `rclone copy|sync|copyto` to
+3. For each path the runner executes `rclone sync` (or `copyto` for a single file, plus `--backup-dir` for
+   incremental jobs) to
    `:s3:<bucket>/<prefix>/<agent>/<absolute path>`. Credentials go only into the child process environment
    (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `RCLONE_S3_*`), with `RCLONE_CONFIG=/dev/null`. They are never on
    the command line, never in a config file, never on disk, and the agent's own environment (including its API
@@ -100,7 +101,36 @@ scanner (`internal/agent/browse.go`, `os` + `path/filepath`) answers with JSON e
    second and POSTed to the dashboard with sequence numbers (retries are idempotent). The UI tails them live.
    Start/finish status and exit code are recorded per run; runs that go silent are marked failed after 10 min.
 
-`copy` never deletes at the destination; `sync` mirrors deletions, so it is opt-in per path.
+### Backup types
+
+Each job is one of:
+
+* **Incremental with versions** (default). Runs `rclone sync --backup-dir`: new and changed files upload, and
+  every file a run would overwrite or delete is first moved to
+  `<prefix>/<agent>/.versions/<job id>/<run time, e.g. 2026-10-07T020000Z>/<original path>`. Previous versions and
+  deleted files stay recoverable in plain, browsable folders. *Keep versions for N days* deletes version folders
+  older than N days after each successful run (0 = forever). Age comes from the folder's run time, not file times.
+* **Mirror sync.** Runs `rclone sync`: Wasabi becomes an exact copy, so files deleted on the machine are deleted
+  from Wasabi at the next run. No history.
+
+Current files always live at `<prefix>/<agent>/<original path>` for both types, so switching type keeps the data in place.
+
+### Testing tools
+
+* **Credentials → Test** checks, from a chosen agent's network, that the keys can list the bucket and
+  (optionally) write, read back and delete a tiny probe object. Failures come with a plain-language reason
+  (wrong secret, unknown key, missing bucket, wrong region, DNS, firewall, TLS, clock skew). Unsaved form values
+  can be tested before saving.
+* **Agent → Test connection** reports round trip time, agent/rclone version, uptime, jobs and what is running.
+* **Job → Dry run** (`--dry-run`) logs exactly what a backup would upload, version or delete, changing nothing.
+* **Job → Verify** (`rclone check --one-way`) confirms every file on the machine exists with the same size and hash
+  in Wasabi. It fails, listing the differences, if anything is missing or changed.
+
+### Scheduling
+
+Schedules are picked in plain terms: every 5 to 30 minutes, every N hours, daily, weekly on chosen days, or monthly,
+at a time in any time zone (default: the browser's). The dashboard shows a plain-English summary and the next run
+times. Under the hood it is standard cron, evaluated by the agent; *Custom* accepts any cron expression or `@every 90m`.
 
 ### Authentication
 
@@ -120,8 +150,9 @@ Agents can only touch their own jobs/runs; an admin JWT is not accepted on agent
 users(id, username, password_hash, created_at)
 agents(id, name, api_key_hash, hostname, version, os, rclone_ver, browse_roots, last_seen_at, created_at)
 wasabi_credentials(id, name, access_key, secret_key_enc, region, bucket, endpoint, created_at)
-backup_jobs(id, agent_id→agents, credential_id→wasabi_credentials, name, dest_prefix, enabled, …)
-backup_paths(id, job_id→backup_jobs, path, mode['copy'|'sync'])        -- selected in the file tree
+backup_jobs(id, agent_id→agents, credential_id→wasabi_credentials, name, dest_prefix, enabled,
+            backup_type['incremental'|'sync'], retention_days, …)
+backup_paths(id, job_id→backup_jobs, path, mode)                       -- selected in the file tree (mode: legacy)
 schedules(id, job_id→backup_jobs, cron_expr, timezone, enabled)        -- many per job
 runs(id, job_id, agent_id, trigger, status, exit_code, summary, started_at, finished_at, updated_at)
 run_logs(run_id→runs, seq, ts, stream['stdout'|'stderr'|'agent'], line) -- PK (run_id, seq)

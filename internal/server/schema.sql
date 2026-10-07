@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS backup_jobs (
     name          TEXT    NOT NULL,
     dest_prefix   TEXT    NOT NULL DEFAULT '',      -- key prefix inside the bucket
     enabled       INTEGER NOT NULL DEFAULT 1,
+    -- incremental: mirror + keep replaced/deleted files in dated version folders
+    -- sync:        exact mirror, deletions propagate, no history
+    backup_type   TEXT    NOT NULL DEFAULT 'incremental' CHECK (backup_type IN ('incremental', 'sync')),
+    retention_days INTEGER NOT NULL DEFAULT 30,             -- incremental only; 0 = keep versions forever
     created_at    BIGINT  NOT NULL,
     updated_at    BIGINT  NOT NULL,
     UNIQUE (agent_id, name)
@@ -56,7 +60,7 @@ CREATE TABLE IF NOT EXISTS backup_paths (
     id     TEXT NOT NULL PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE,
     path   TEXT NOT NULL,
-    mode   TEXT NOT NULL DEFAULT 'copy' CHECK (mode IN ('copy', 'sync')),
+    mode   TEXT NOT NULL DEFAULT 'copy' CHECK (mode IN ('copy', 'sync')), -- legacy; backup_jobs.backup_type decides
     UNIQUE (job_id, path)
 );
 

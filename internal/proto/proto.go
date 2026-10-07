@@ -17,13 +17,15 @@ import (
 // agent things it cannot know on its own, e.g. "list /host/home".
 
 const (
-	MsgBrowse        = "browse"         // server -> agent, request: BrowseRequest, reply: BrowseResult
-	MsgRunNow        = "run_now"        // server -> agent, request: RunNowRequest
-	MsgCancelRun     = "cancel_run"     // server -> agent, request: CancelRunRequest
-	MsgConfigChanged = "config_changed" // server -> agent, notification (agent re-fetches config)
-	MsgHello         = "hello"          // agent -> server, first message: Hello
-	MsgPing          = "ping"           // agent -> server, keepalive
-	MsgResult        = "result"         // reply to any request
+	MsgBrowse        = "browse"           // server -> agent, request: BrowseRequest, reply: BrowseResult
+	MsgRunNow        = "run_now"          // server -> agent, request: RunNowRequest
+	MsgCancelRun     = "cancel_run"       // server -> agent, request: CancelRunRequest
+	MsgConfigChanged = "config_changed"   // server -> agent, notification (agent re-fetches config)
+	MsgTestCreds     = "test_credentials" // server -> agent, request: CredentialTestRequest, reply: CredentialTestResult
+	MsgStatus        = "status"           // server -> agent, request: none, reply: AgentStatus
+	MsgHello         = "hello"            // agent -> server, first message: Hello
+	MsgPing          = "ping"             // agent -> server, keepalive
+	MsgResult        = "result"           // reply to any request
 )
 
 // Envelope is the single frame type on the WebSocket. Requests carry an ID that
@@ -50,8 +52,49 @@ type BrowseRequest struct {
 	Path string `json:"path"`
 }
 
+// Run modes. A run's trigger records how it started: "schedule", "manual",
+// or one of the test modes below.
+const (
+	ModeBackup = "backup"  // the real thing
+	ModeDryRun = "dry-run" // rclone --dry-run: lists what would be transferred
+	ModeVerify = "verify"  // rclone check: confirms every source file exists unchanged at the destination
+)
+
 type RunNowRequest struct {
 	JobID string `json:"job_id"`
+	Mode  string `json:"mode,omitempty"` // "" = backup
+}
+
+// ---- Diagnostics ------------------------------------------------------------
+
+type CredentialTestRequest struct {
+	Wasabi    WasabiConfig `json:"wasabi"`
+	Prefix    string       `json:"prefix"`     // where the probe object goes
+	WriteTest bool         `json:"write_test"` // also write, read back and delete a probe object
+}
+
+type TestStep struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // ok | failed | skipped
+	Detail string `json:"detail,omitempty"`
+	Millis int64  `json:"ms"`
+}
+
+type CredentialTestResult struct {
+	OK    bool       `json:"ok"`
+	Steps []TestStep `json:"steps"`
+}
+
+type AgentStatus struct {
+	Hostname    string   `json:"hostname"`
+	Version     string   `json:"version"`
+	RcloneVer   string   `json:"rclone_version"`
+	BrowseRoots []string `json:"browse_roots"`
+	ConfigRev   int64    `json:"config_rev"`
+	Jobs        int      `json:"jobs"`
+	Schedules   int      `json:"schedules"`
+	RunningJobs []string `json:"running_jobs"`
+	UptimeSec   int64    `json:"uptime_sec"`
 }
 
 type CancelRunRequest struct {
@@ -96,13 +139,26 @@ type JobConfig struct {
 	Name       string         `json:"name"`
 	Enabled    bool           `json:"enabled"`
 	DestPrefix string         `json:"dest_prefix"`
+	BackupType string         `json:"backup_type"`    // BackupIncremental | BackupSync
+	Retention  int            `json:"retention_days"` // incremental: days to keep old versions, 0 = forever
 	Paths      []PathConfig   `json:"paths"`
 	Schedules  []ScheduleSpec `json:"schedules"`
 	Wasabi     WasabiConfig   `json:"wasabi"`
 }
 
-// PathConfig is one selected source on the agent. Mode is "copy" (never
-// deletes at the destination) or "sync" (makes destination mirror the source).
+// Backup types (per job).
+const (
+	// BackupIncremental mirrors the source, but every file that a run would
+	// overwrite or delete is first moved to <prefix>/<agent>/.versions/<job>/<timestamp>/,
+	// so earlier versions and deleted files stay recoverable.
+	BackupIncremental = "incremental"
+	// BackupSync makes the destination an exact mirror: new files are added,
+	// deleted files are deleted. No history.
+	BackupSync = "sync"
+)
+
+// PathConfig is one selected source on the agent. Mode is legacy and ignored:
+// the job's BackupType decides how paths are copied.
 type PathConfig struct {
 	Path string `json:"path"`
 	Mode string `json:"mode"`
@@ -133,7 +189,7 @@ const (
 
 type StartRunRequest struct {
 	JobID   string `json:"job_id"`
-	Trigger string `json:"trigger"` // "schedule" | "manual"
+	Trigger string `json:"trigger"` // "schedule" | "manual" | "dry-run" | "verify"
 }
 
 type StartRunResponse struct {
