@@ -208,7 +208,7 @@ function showKey(box, name, key) {
       h('code', { class: 'block flex-1 break-all rounded bg-slate-950 p-2 text-xs text-emerald-300 select-all' }, cmd), cmdBtn),
     h('p', { class: 'text-xs text-slate-400' },
       'Needs systemd and curl. It installs the agent and rclone and starts the service, which then shows up here as online. ',
-      'By default the dashboard can browse /home, /root, /etc, /srv, /opt and /var/www; append --roots /data,/mnt/photos to change that. ',
+      'By default the dashboard can browse /home, /root, /etc, /srv, /opt and /var (including Docker volumes); append --roots /data,/mnt/photos to change that. ',
       'Docker instead: use docker-compose.agent.yml with AGENT_API_KEY=', h('span', { class: 'font-mono' }, key), '.')));
 }
 
@@ -221,6 +221,7 @@ async function viewAgent(agentId) {
 
   const sel = new Map();           // path -> mode ("copy" | "sync")
   let editing = null;              // job being edited, or null for a new one
+  let exEd = null;                 // excludes editor of the open job form
   const checkEls = [];             // every rendered tree checkbox, for refreshing
   const explorer = h('div', { class: 'max-h-[28rem] overflow-auto font-mono text-sm' });
   const selectedBox = h('div', { class: 'space-y-1' });
@@ -254,7 +255,17 @@ async function viewAgent(agentId) {
   }
   function renderSelected() {
     clear(selectedBox);
-    if (!sel.size) { selectedBox.append(h('p', { class: 'text-sm text-slate-500' }, 'Nothing selected. Tick files or folders in the explorer.')); return; }
+    if (exEd) exEd.refresh([...sel.keys()]);
+    const manual = h('input', { class: 'input font-mono', placeholder: 'or type a path, e.g. /var/lib/docker/volumes' });
+    const addManual = () => {
+      const v = manual.value.trim().replace(/\/+$/, '');
+      if (!v.startsWith('/')) { toast('Enter an absolute path starting with /', true); return; }
+      for (const s of [...sel.keys()]) if (s.startsWith(v + '/')) sel.delete(s);
+      sel.set(v, 'copy'); refreshChecks();
+    };
+    manual.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addManual(); } });
+    selectedBox.append(h('div', { class: 'mb-1 flex gap-2' }, manual, h('button', { type: 'button', class: 'btn btn-ghost whitespace-nowrap', onclick: addManual }, 'Add path')));
+    if (!sel.size) { selectedBox.append(h('p', { class: 'text-sm text-slate-500' }, 'Nothing selected. Tick files or folders in the explorer, or type a path.')); return; }
     for (const p of [...sel.keys()].sort()) {
       selectedBox.append(h('div', { class: 'flex items-center gap-2 rounded bg-slate-950 px-2 py-1' },
         h('span', { class: 'flex-1 truncate font-mono text-xs', title: p }, p),
@@ -323,6 +334,13 @@ async function viewAgent(agentId) {
     }
     renderSched();
 
+    // Excludes and database dumps (edited in place, sent on save)
+    const excludes = job ? [...job.excludes] : [];
+    const dumps = job ? job.dumps.map((d) => ({ ...d, password: '' })) : [];
+    exEd = excludesEditor(excludes);
+    exEd.refresh([...sel.keys()]);
+    const dumpsBox = dumpsEditor(dumps, { agentId, jobId: job ? job.id : '' });
+
     // Backup type
     let backupType = job ? job.backup_type : 'incremental';
     const retention = h('input', { type: 'number', min: '0', max: '3650', class: 'input w-24', value: String(job ? job.retention_days : 30) });
@@ -349,6 +367,8 @@ async function viewAgent(agentId) {
         agent_id: agentId, credential_id: credSel.value, name: name.value, dest_prefix: prefix.value, enabled: enabled.checked,
         backup_type: backupType, retention_days: parseInt(retention.value || '0', 10),
         paths: [...sel.keys()].map((path) => ({ path })),
+        excludes,
+        dumps: dumps.map(({ has_password, ...d }) => d),
         schedules: schedules.map((s) => ({ cron_expr: s.cron_expr, timezone: s.timezone || 'UTC', enabled: s.enabled })),
       };
       if (job) await api('PUT', '/api/jobs/' + job.id, body); else await api('POST', '/api/jobs', body);
@@ -364,6 +384,8 @@ async function viewAgent(agentId) {
         h('div', {}, h('label', { class: 'label' }, 'Wasabi credentials'), credSel),
         h('div', {}, h('label', { class: 'label' }, 'Bucket prefix'), prefix)),
       h('div', {}, h('label', { class: 'label' }, 'Selected paths'), selectedBox),
+      h('div', {}, h('label', { class: 'label' }, 'Exclude'), exEd.el),
+      h('div', {}, h('label', { class: 'label' }, 'Databases'), dumpsBox),
       h('div', {}, h('label', { class: 'label' }, 'Backup type'), typeBox),
       h('div', {}, h('label', { class: 'label' }, 'When to run'), schedBox),
       h('label', { class: 'flex items-center gap-2 text-sm' }, enabled, 'Job enabled'),
@@ -388,7 +410,7 @@ async function viewAgent(agentId) {
           h('span', { class: 'font-medium' }, j.name), j.enabled ? null : h('span', { class: 'text-xs text-slate-500' }, '(paused)'),
           h('span', { class: 'rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300' }, j.backup_type === 'sync' ? 'Mirror sync' : 'Incremental' + (j.retention_days ? ` · ${j.retention_days}d versions` : ' · versions kept forever')),
           j.last_run ? h('a', { href: '#/runs/' + j.last_run.id, title: triggerLabel(j.last_run.trigger) + ' ' + fmtTime(j.last_run.started_at) }, badge(j.last_run.status)) : h('span', { class: 'text-xs text-slate-500' }, 'never run')),
-        h('p', { class: 'text-xs text-slate-400' }, `${j.paths.length} path(s) · ${when}`,
+        h('p', { class: 'text-xs text-slate-400' }, `${j.paths.length} path(s)` + (j.dumps.length ? ` + ${j.dumps.length} database(s)` : '') + (j.excludes.length ? ` · ${j.excludes.length} exclude(s)` : '') + ` · ${when}`,
           j.next_run ? h('span', { class: 'text-slate-500' }, ` · next ${until(j.next_run)} (${new Date(j.next_run * 1000).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })} your time)`) : null),
         h('div', { class: 'flex flex-wrap gap-2' },
           h('button', { class: 'btn btn-primary', onclick: run('', 'Backup') }, 'Run now'),

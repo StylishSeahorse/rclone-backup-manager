@@ -23,6 +23,7 @@ const (
 	MsgConfigChanged = "config_changed"   // server -> agent, notification (agent re-fetches config)
 	MsgTestCreds     = "test_credentials" // server -> agent, request: CredentialTestRequest, reply: CredentialTestResult
 	MsgStatus        = "status"           // server -> agent, request: none, reply: AgentStatus
+	MsgTestDump      = "test_dump"        // server -> agent, request: DumpConfig, reply: DumpTestResult
 	MsgHello         = "hello"            // agent -> server, first message: Hello
 	MsgPing          = "ping"             // agent -> server, keepalive
 	MsgResult        = "result"           // reply to any request
@@ -142,8 +143,37 @@ type JobConfig struct {
 	BackupType string         `json:"backup_type"`    // BackupIncremental | BackupSync
 	Retention  int            `json:"retention_days"` // incremental: days to keep old versions, 0 = forever
 	Paths      []PathConfig   `json:"paths"`
+	Excludes   []string       `json:"excludes"` // absolute paths (and everything inside) or name patterns like *.log
+	Dumps      []DumpConfig   `json:"dumps"`    // databases dumped before the files are copied
 	Schedules  []ScheduleSpec `json:"schedules"`
 	Wasabi     WasabiConfig   `json:"wasabi"`
+}
+
+// DumpConfig is a MySQL/MariaDB database dumped with mysqldump (a consistent
+// snapshot; copying a live database's raw files is not) and streamed, gzipped,
+// to <prefix>/<agent>/_databases/<name>/<name>-<timestamp>.sql.gz.
+type DumpConfig struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Container string `json:"container,omitempty"` // dump inside this Docker container (docker exec), or
+	Host      string `json:"host,omitempty"`      // connect over TCP with this machine's mysqldump
+	Port      int    `json:"port,omitempty"`
+	User      string `json:"user"`
+	Password  string `json:"password,omitempty"`
+	// UseContainerEnv takes the root password from the container's own
+	// MYSQL_ROOT_PASSWORD / MARIADB_ROOT_PASSWORD, so it is never stored here.
+	UseContainerEnv bool     `json:"use_container_env,omitempty"`
+	Databases       []string `json:"databases"` // empty = all databases
+	KeepDays        int      `json:"keep_days"` // 0 = keep every dump
+}
+
+// DumpTestResult answers MsgTestDump.
+type DumpTestResult struct {
+	OK        bool     `json:"ok"`
+	Version   string   `json:"version,omitempty"`
+	Databases []string `json:"databases,omitempty"`
+	Error     string   `json:"error,omitempty"`
+	Millis    int64    `json:"ms"`
 }
 
 // Backup types (per job).

@@ -14,6 +14,7 @@ type Config struct {
 	APIKey        string   // AGENT_API_KEY, or the contents of AGENT_API_KEY_FILE (Docker/K8s secret)
 	BrowseRoots   []string // AGENT_BROWSE_ROOTS, default "/host,/data"
 	RclonePath    string   // AGENT_RCLONE_PATH, default "rclone"
+	DockerPath    string   // AGENT_DOCKER_PATH, default "docker" (for database dumps from containers)
 	MaxConcurrent int      // AGENT_MAX_CONCURRENT, default 1
 	CAFile        string   // AGENT_CA_FILE: extra CA bundle for a private-CA dashboard
 	Hostname      string   // AGENT_HOSTNAME override for what the dashboard shows
@@ -24,6 +25,7 @@ func LoadConfig() (*Config, error) {
 		ServerURL:  strings.TrimRight(os.Getenv("AGENT_SERVER_URL"), "/"),
 		APIKey:     strings.TrimSpace(os.Getenv("AGENT_API_KEY")),
 		RclonePath: env("AGENT_RCLONE_PATH", "rclone"),
+		DockerPath: env("AGENT_DOCKER_PATH", "docker"),
 		CAFile:     os.Getenv("AGENT_CA_FILE"),
 		Hostname:   os.Getenv("AGENT_HOSTNAME"),
 	}

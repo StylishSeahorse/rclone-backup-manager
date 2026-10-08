@@ -260,6 +260,9 @@ func (a *Agent) execute(ctx context.Context, ar *activeRun, job *proto.JobConfig
 		return proto.StatusCancelled, 1, "cancelled while queued"
 	}
 
+	// Databases first, so the dump reflects the same moment as the files.
+	dumpOK, dumpFailed := a.runDumps(ctx, job, mode, stamp, lg)
+
 	ok, failed := 0, 0
 	lastCode := 0
 	for _, p := range job.Paths {
@@ -287,7 +290,13 @@ func (a *Agent) execute(ctx context.Context, ar *activeRun, job *proto.JobConfig
 		if incremental {
 			backupDir = versionsRoot(job.Wasabi, *job, a.name()) + "/" + stamp + "/" + strings.TrimPrefix(path.Clean(src), "/")
 		}
-		args := rcloneArgs(mode, fi.IsDir(), src, dst, backupDir)
+		exFlags, excluded := excludeFlags(src, job.Excludes)
+		if excluded {
+			lg.agent("SKIP %s: the whole path is excluded", p.Path)
+			ok++
+			continue
+		}
+		args := append(rcloneArgs(mode, fi.IsDir(), src, dst, backupDir), exFlags...)
 		// The command line contains no secrets, so it is safe to show.
 		lg.agent("$ rclone %s", strings.Join(args, " "))
 
@@ -319,7 +328,16 @@ func (a *Agent) execute(ctx context.Context, ar *activeRun, job *proto.JobConfig
 	if mode == proto.ModeBackup && incremental && job.Retention > 0 && failed == 0 {
 		a.pruneVersions(ctx, job, lg)
 	}
-	summary = fmt.Sprintf("%d of %d path(s) %s", ok, len(job.Paths), verb)
+	var parts []string
+	if len(job.Paths) > 0 {
+		parts = append(parts, fmt.Sprintf("%d of %d path(s) %s", ok, len(job.Paths), verb))
+	}
+	if len(job.Dumps) > 0 && mode != proto.ModeVerify {
+		dverb := map[string]string{proto.ModeBackup: "dumped", proto.ModeDryRun: "reachable"}[mode]
+		parts = append(parts, fmt.Sprintf("%d of %d database(s) %s", dumpOK, len(job.Dumps), dverb))
+	}
+	summary = strings.Join(parts, ", ")
+	failed += dumpFailed
 	if failed > 0 {
 		if lastCode == 0 {
 			lastCode = 1
@@ -354,9 +372,7 @@ func (a *Agent) runRclone(ctx context.Context, args, env []string, lg *runLogger
 	var wg sync.WaitGroup
 	pump := func(r io.Reader, stream string) {
 		defer wg.Done()
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 64<<10), 1<<20)
-		sc.Split(splitLines)
+		sc := newLineScanner(r)
 		for sc.Scan() {
 			if t := strings.TrimSpace(sc.Text()); t != "" {
 				lg.add(stream, t)
@@ -380,6 +396,38 @@ func (a *Agent) runRclone(ctx context.Context, args, env []string, lg *runLogger
 		return ee.ExitCode(), fmt.Errorf("rclone exited with code %d", ee.ExitCode())
 	}
 	return 1, err
+}
+
+// excludeFlags turns the job's excludes into rclone filter flags for one
+// source. Absolute paths apply when they are inside src (and everything below
+// them is skipped); other entries are rclone patterns matched anywhere, e.g.
+// "*.log". excluded reports that src itself is excluded.
+func excludeFlags(src string, excludes []string) (flags []string, excluded bool) {
+	for _, e := range excludes {
+		if !strings.HasPrefix(e, "/") {
+			flags = append(flags, "--exclude", e)
+			continue
+		}
+		glob := strings.ContainsAny(e, "*?[{")
+		if !glob && (e == src || strings.HasPrefix(src, e+"/")) {
+			return nil, true
+		}
+		if strings.HasPrefix(e, src+"/") {
+			rel := e[len(src):] // "/lib/docker/overlay2", anchored at the source root
+			if !glob {
+				rel = escapeGlob(rel)
+			}
+			flags = append(flags, "--exclude", rel, "--exclude", rel+"/**")
+		}
+	}
+	return flags, false
+}
+
+func newLineScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	sc.Split(splitLines)
+	return sc
 }
 
 // splitLines splits on \n or \r, so rclone's \r-refreshed progress output
@@ -626,6 +674,14 @@ func (s *runStats) endInvocation() {
 	s.total.Bytes += s.cur
 	s.cur = 0
 	s.copying = nil
+	s.mu.Unlock()
+}
+
+// addUpload records a single uploaded object (e.g. a database dump).
+func (s *runStats) addUpload(n int64) {
+	s.mu.Lock()
+	s.total.Bytes += n
+	s.total.Transferred++
 	s.mu.Unlock()
 }
 

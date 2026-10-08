@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS backup_jobs (
     -- sync:        exact mirror, deletions propagate, no history
     backup_type   TEXT    NOT NULL DEFAULT 'incremental' CHECK (backup_type IN ('incremental', 'sync')),
     retention_days INTEGER NOT NULL DEFAULT 30,             -- incremental only; 0 = keep versions forever
+    excludes      TEXT    NOT NULL DEFAULT '[]',            -- JSON array of paths/patterns to skip
     created_at    BIGINT  NOT NULL,
     updated_at    BIGINT  NOT NULL,
     UNIQUE (agent_id, name)
@@ -62,6 +63,24 @@ CREATE TABLE IF NOT EXISTS backup_paths (
     path   TEXT NOT NULL,
     mode   TEXT NOT NULL DEFAULT 'copy' CHECK (mode IN ('copy', 'sync')), -- legacy; backup_jobs.backup_type decides
     UNIQUE (job_id, path)
+);
+
+-- MySQL/MariaDB databases dumped (mysqldump) as part of a job. password_enc is
+-- AES-256-GCM like the Wasabi secrets; '' when the container's own root
+-- password is used (use_container_env).
+CREATE TABLE IF NOT EXISTS database_dumps (
+    id                TEXT    PRIMARY KEY,
+    job_id            TEXT    NOT NULL REFERENCES backup_jobs(id) ON DELETE CASCADE,
+    name              TEXT    NOT NULL,
+    container         TEXT    NOT NULL DEFAULT '',   -- docker exec into this container, or
+    host              TEXT    NOT NULL DEFAULT '',   -- connect over TCP
+    port              INTEGER NOT NULL DEFAULT 0,
+    username          TEXT    NOT NULL DEFAULT 'root',
+    password_enc      TEXT    NOT NULL DEFAULT '',
+    use_container_env INTEGER NOT NULL DEFAULT 0,
+    databases         TEXT    NOT NULL DEFAULT '[]', -- JSON array; [] = all
+    keep_days         INTEGER NOT NULL DEFAULT 30,
+    UNIQUE (job_id, name)
 );
 
 -- Cron schedules; a job may have several. Evaluated by the agent, not the host.

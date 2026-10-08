@@ -24,6 +24,12 @@ func (a *Agent) diagnose(ctx context.Context, env proto.Envelope) (any, error) {
 	switch env.Type {
 	case proto.MsgStatus:
 		return a.status(), nil
+	case proto.MsgTestDump:
+		var d proto.DumpConfig
+		if err := json.Unmarshal(env.Payload, &d); err != nil {
+			return nil, errors.New("bad request")
+		}
+		return a.testDump(ctx, d), nil
 	case proto.MsgTestCreds:
 		var req proto.CredentialTestRequest
 		if err := json.Unmarshal(env.Payload, &req); err != nil {

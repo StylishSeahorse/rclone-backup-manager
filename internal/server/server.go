@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/credentials/{id}", admin(s.deleteCredential))
 	mux.HandleFunc("POST /api/credentials/test", admin(s.testCredential))
 	mux.HandleFunc("POST /api/schedules/preview", admin(s.previewSchedule))
+	mux.HandleFunc("POST /api/dumps/test", admin(s.testDump))
 
 	mux.HandleFunc("GET /api/jobs", admin(s.listJobs))
 	mux.HandleFunc("POST /api/jobs", admin(s.createJob))
@@ -176,6 +177,11 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func dbErr(w http.ResponseWriter, err error) {
+	var ve validationError
+	if errors.As(err, &ve) {
+		writeErr(w, http.StatusBadRequest, ve.msg)
+		return
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return

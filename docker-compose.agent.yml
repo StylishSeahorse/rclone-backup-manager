@@ -20,7 +20,10 @@ services:
     volumes:
       - /home:/host/home:ro
       - /etc:/host/etc:ro
-      - /var/www:/host/var/www:ro
+      - /var:/host/var:ro                     # includes /var/www and Docker volumes (/var/lib/docker/volumes)
+      # MySQL/MariaDB dumps from containers need the Docker socket. Note: this
+      # gives the agent control of Docker on this host.
+      # - /var/run/docker.sock:/var/run/docker.sock
       # - ./ca.pem:/certs/ca.pem:ro
     cap_drop: [ALL]
     cap_add: [DAC_READ_SEARCH]

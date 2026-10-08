@@ -188,6 +188,12 @@ func (s *Server) agentConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		sr.Close()
+		ex, _, dumps, err := s.loadJobExtras(x.job.ID)
+		if err != nil {
+			s.log.Printf("job %s: %v", x.job.ID, err)
+			continue // never ship a job with broken credentials
+		}
+		x.job.Excludes, x.job.Dumps = ex, dumps
 		cfg.Jobs = append(cfg.Jobs, x.job)
 	}
 	w.Header().Set("Cache-Control", "no-store")

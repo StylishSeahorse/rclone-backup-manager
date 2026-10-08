@@ -61,6 +61,11 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
+	if !has("backup_jobs", "excludes") {
+		if _, err := db.Exec(`ALTER TABLE backup_jobs ADD COLUMN excludes TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
+	}
 	if !has("runs", "bytes") {
 		for _, col := range []string{"bytes BIGINT", "files_transferred INTEGER", "files_deleted INTEGER", "files_versioned INTEGER", "errors INTEGER"} {
 			if _, err := db.Exec(`ALTER TABLE runs ADD COLUMN ` + col + ` NOT NULL DEFAULT 0`); err != nil {

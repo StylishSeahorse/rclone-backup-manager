@@ -327,6 +327,8 @@ type jobView struct {
 	BackupType    string             `json:"backup_type"`
 	RetentionDays int                `json:"retention_days"`
 	Paths         []proto.PathConfig `json:"paths"`
+	Excludes      []string           `json:"excludes"`
+	Dumps         []dumpView         `json:"dumps"`
 	Schedules     []scheduleView     `json:"schedules"`
 	LastRun       *runView           `json:"last_run"`
 	NextRun       *int64             `json:"next_run"` // unix seconds; nil if disabled/unscheduled
@@ -347,6 +349,8 @@ type jobInput struct {
 	BackupType    string             `json:"backup_type"`    // "incremental" (default) | "sync"
 	RetentionDays *int               `json:"retention_days"` // incremental: days to keep versions; 0 = forever; default 30
 	Paths         []proto.PathConfig `json:"paths"`
+	Excludes      []string           `json:"excludes"`
+	Dumps         []dumpInput        `json:"dumps"`
 	Schedules     []scheduleView     `json:"schedules"`
 }
 
@@ -384,8 +388,15 @@ func (in *jobInput) validate() error {
 	if *in.RetentionDays < 0 || *in.RetentionDays > 3650 {
 		return errors.New("keep versions for 0 (forever) to 3650 days")
 	}
-	if len(in.Paths) == 0 {
-		return errors.New("select at least one path to back up")
+	var err error
+	if in.Excludes, err = validateExcludes(in.Excludes); err != nil {
+		return err
+	}
+	if err := validateDumps(in.Dumps); err != nil {
+		return err
+	}
+	if len(in.Paths) == 0 && len(in.Dumps) == 0 {
+		return errors.New("select at least one path or add a database to back up")
 	}
 	if len(in.Paths) > 500 {
 		return errors.New("too many paths (max 500)")
@@ -405,8 +416,10 @@ func (in *jobInput) validate() error {
 		if p.Path == "/" {
 			return errors.New("refusing to back up the filesystem root; pick specific directories")
 		}
-		if p.Path == "/.versions" || strings.HasPrefix(p.Path, "/.versions/") {
-			return errors.New("/.versions is reserved for incremental version history")
+		for _, reserved := range []string{"/.versions", "/_databases"} {
+			if p.Path == reserved || strings.HasPrefix(p.Path, reserved+"/") {
+				return fmt.Errorf("%s is reserved in the backup layout", reserved)
+			}
 		}
 		if seen[p.Path] {
 			return fmt.Errorf("duplicate path %s", p.Path)
@@ -496,6 +509,11 @@ func (s *Server) scanJobs(rows *sql.Rows) ([]jobView, error) {
 			j.Schedules = append(j.Schedules, sc)
 		}
 		sr.Close()
+		ex, dv, _, err := s.loadJobExtras(j.ID)
+		if err != nil {
+			return nil, err
+		}
+		j.Excludes, j.Dumps = ex, dv
 		j.LastRun = s.lastRun(j.ID)
 		if j.Enabled {
 			j.NextRun = nextRun(j.Schedules, time.Now())
@@ -548,7 +566,7 @@ func (s *Server) writeJobChildren(tx *sql.Tx, jobID string, in *jobInput) error 
 			return err
 		}
 	}
-	return nil
+	return s.writeJobExtras(tx, jobID, in)
 }
 
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {

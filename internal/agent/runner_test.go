@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -286,5 +287,78 @@ func TestRunStatsFromRcloneOutput(t *testing.T) {
 	wantBytes := int64(1999634) + 2 // 1.907 MiB + 2 B
 	if got.Transferred != 3 || got.Versioned != 4 || got.Deleted != 2 || got.Errors != 1 || got.Bytes != wantBytes {
 		t.Errorf("stats = %+v, want 3 transferred, 4 versioned, 2 deleted, 1 error, %d bytes", got, wantBytes)
+	}
+}
+
+func TestExcludeFlags(t *testing.T) {
+	ex := []string{"/var/lib/docker/overlay2", "/var/cache", "*.sock", "/var/lib/docker/volumes/*_redis_data", "/home", "/srv/a[1]"}
+	flags, skip := excludeFlags("/var", ex)
+	got := strings.Join(flags, " ")
+	for _, want := range []string{
+		"--exclude /lib/docker/overlay2 --exclude /lib/docker/overlay2/**",
+		"--exclude /cache --exclude /cache/**",
+		"--exclude *.sock",
+		"--exclude /lib/docker/volumes/*_redis_data --exclude /lib/docker/volumes/*_redis_data/**", // globs kept
+	} {
+		if skip || !strings.Contains(got, want) {
+			t.Errorf("excludeFlags(/var) missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "/home") {
+		t.Error("excludes outside the source must not apply")
+	}
+	// Entries containing * ? [ { are patterns, so "/srv/a[1]" matches a1 (documented in the UI).
+	if f, _ := excludeFlags("/srv", ex); !strings.Contains(strings.Join(f, " "), "--exclude /a[1] --exclude /a[1]/**") {
+		t.Errorf("pattern entries keep their globs: %q", f)
+	}
+	if _, skip := excludeFlags("/var/cache/apt", ex); !skip {
+		t.Error("a source inside an excluded path is excluded entirely")
+	}
+	if _, skip := excludeFlags("/var/cachex", ex); skip {
+		t.Error("/var/cachex is not inside /var/cache")
+	}
+}
+
+func TestExpiredDumps(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	files := []string{
+		"app-2026-10-08T020000Z.sql.gz", "app-2026-09-01T020000Z.sql.gz", "app-2026-08-01T020000Z.sql.gz",
+		"app-2026-10-07T020000Z.sql.gz.partial", "app-2026-10-08T110000Z.sql.gz.partial", // old partial goes, fresh one stays
+		"other-2020-01-01T000000Z.sql.gz", "notes.txt",
+	}
+	if got := strings.Join(expiredDumps(files, "app", now, 30), " "); got != "app-2026-08-01T020000Z.sql.gz app-2026-09-01T020000Z.sql.gz app-2026-10-07T020000Z.sql.gz.partial" {
+		t.Errorf("expired = %s", got)
+	}
+	// Never delete the newest complete dump, however old.
+	old := []string{"app-2020-01-01T000000Z.sql.gz", "app-2019-01-01T000000Z.sql.gz"}
+	if got := expiredDumps(old, "app", now, 7); len(got) != 1 || got[0] != "app-2019-01-01T000000Z.sql.gz" {
+		t.Errorf("newest dump must survive: %v", got)
+	}
+}
+
+func TestDumpPasswordNeverInArgsOrEnv(t *testing.T) {
+	a := &Agent{cfg: &Config{DockerPath: "docker"}}
+	t.Setenv("AGENT_API_KEY", "wbk_secret")
+	d := proto.DumpConfig{Name: "db", Container: "mysql", User: "root", Password: `p"a\ss w0rd`, Databases: []string{"ninja"}}
+	cmd, err := a.mysqlCommand(context.Background(), d, "dump", append(mysqlDumpFlags, dumpDBArgs(d)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(cmd.Args, " ") + strings.Join(cmd.Env, " ")
+	if strings.Contains(all, "w0rd") || strings.Contains(all, "wbk_secret") {
+		t.Errorf("secret leaked into argv/env: %s", all)
+	}
+	if !strings.Contains(strings.Join(cmd.Args, " "), "exec -i mysql sh -c") || !strings.HasSuffix(strings.Join(cmd.Args, " "), "--databases ninja") {
+		t.Errorf("args = %q", cmd.Args)
+	}
+	in, _ := io.ReadAll(cmd.Stdin)
+	if string(in) != "[client]\nuser=root\npassword=\"p\\\"a\\\\ss w0rd\"\n" {
+		t.Errorf("option file = %q", in)
+	}
+	// Container-env mode sends nothing on stdin: the password never leaves the container.
+	d.UseContainerEnv, d.Password = true, ""
+	cmd, _ = a.mysqlCommand(context.Background(), d, "client", []string{"-e", "SELECT 1"})
+	if cmd.Stdin != nil || !strings.Contains(strings.Join(cmd.Args, " "), "MYSQL_ROOT_PASSWORD") {
+		t.Errorf("env mode: stdin=%v args=%q", cmd.Stdin, cmd.Args)
 	}
 }

@@ -24,7 +24,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 # ---- 3. Runtime ----------------------------------------------------------------------------
 FROM alpine:${ALPINE_VERSION}
 # ca-certificates: TLS to Wasabi and the dashboard.  tzdata: cron schedules in local time zones.
-RUN apk add --no-cache ca-certificates tzdata
+# docker-cli + mariadb-client: MySQL/MariaDB dumps (docker exec into a container, or over TCP).
+RUN apk add --no-cache ca-certificates tzdata docker-cli mariadb-client
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 COPY --from=build /out/agent /usr/local/bin/agent
 # Fail the build if rclone is missing or cannot run on this architecture.

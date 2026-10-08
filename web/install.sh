@@ -7,7 +7,7 @@
 #   --url URL        dashboard URL (required)
 #   --key KEY        agent API key from the dashboard (required)
 #   --roots LIST     comma-separated directories the dashboard may browse/back up
-#                    (default: /home,/root,/etc,/srv,/opt,/var/www)
+#                    (default: /home,/root,/etc,/srv,/opt,/var)
 #   --uninstall      stop and remove the agent (keeps rclone)
 set -eu
 
@@ -15,7 +15,7 @@ RCLONE_VERSION="${RCLONE_VERSION:-1.75.1}"
 PREFIX=/usr/local/bin
 CONF_DIR=/etc/wasabi-agent
 UNIT=/etc/systemd/system/wasabi-agent.service
-URL="" KEY="" ROOTS="/home,/root,/etc,/srv,/opt,/var/www" UNINSTALL=0
+URL="" KEY="" ROOTS="/home,/root,/etc,/srv,/opt,/var" UNINSTALL=0
 
 say() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }

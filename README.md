@@ -126,6 +126,20 @@ Current files always live at `<prefix>/<agent>/<original path>` for both types, 
 * **Job → Verify** (`rclone check --one-way`) confirms every file on the machine exists with the same size and hash
   in Wasabi. It fails, listing the differences, if anything is missing or changed.
 
+### Databases, Docker volumes and /var
+
+* **MySQL / MariaDB:** add a database to a job and it is dumped with `mysqldump --single-transaction` on every
+  run, gzipped and streamed to `<prefix>/<agent>/_databases/<name>/<name>-<time>.sql.gz` (no local temp file).
+  Dump from a Docker container (`docker exec`; can use the container's own `MYSQL_ROOT_PASSWORD`) or a host:port.
+  A dump only gets its final name if mysqldump completed; *Keep dumps for N days* prunes old ones (the newest is
+  always kept). *Test connection* checks it from the agent. Restore:
+  `rclone cat <dump> | gunzip | docker exec -i <container> mysql -uroot -p`.
+  Exclude the raw database volume from file backups; a copy of live database files is usually not restorable.
+* **Docker volumes:** they are folders under `/var/lib/docker/volumes/<project>_<name>/_data`; select them like
+  any folder. The native agent sees `/var` by default.
+* **Excludes:** skip folders (e.g. `/var/lib/docker/overlay2`, `/var/cache`) or patterns (`*.sock`); the form
+  suggests common ones.
+
 ### Overview dashboard
 
 The landing page summarises backup health for the last 24 hours, 7, 30 or 90 days, for all agents or one:

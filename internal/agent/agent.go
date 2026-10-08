@@ -280,7 +280,7 @@ func (a *Agent) session(ctx context.Context) error {
 				}
 				a.startRun(req.JobID, trigger)
 			}
-		case proto.MsgTestCreds, proto.MsgStatus:
+		case proto.MsgTestCreds, proto.MsgStatus, proto.MsgTestDump:
 			go func() { // may take seconds: never block the read loop
 				res, err := a.diagnose(ctx, env)
 				reply := proto.Envelope{ID: env.ID, Type: proto.MsgResult}
